@@ -13,16 +13,14 @@ ENV CI=false
 ENV NODE_ENV=production
 # 禁用 Source Map 以减少内存占用和加快构建速度
 ENV GENERATE_SOURCEMAP=false
-# 禁用 ESLint 插件以避免构建期间的 Lint 错误中断
-ENV DISABLE_ESLINT_PLUGIN=true
 
 # 复制package.json文件
 COPY package*.json ./
-COPY client/package*.json ./client/
+COPY client-vue/package*.json ./client-vue/
 
 # 安装依赖
 RUN npm install --no-audit --no-fund --prefer-offline --verbose --legacy-peer-deps
-RUN cd client && npm install --no-audit --no-fund --prefer-offline --no-optional --verbose --legacy-peer-deps
+RUN cd client-vue && npm install --no-audit --no-fund --prefer-offline --verbose --legacy-peer-deps
 
 # 复制源代码
 COPY . .
@@ -30,15 +28,13 @@ COPY . .
 # 调试：检查复制的文件
 RUN echo "=== Checking copied files ===" && \
     ls -la && \
-    echo "=== Client directory ===" && \
-    ls -la client/ && \
-    echo "=== Client public directory ===" && \
-    ls -la client/public/ && \
-    echo "=== Public directory contents ===" && \
-    find client/public -type f
+    echo "=== Vue client directory ===" && \
+    ls -la client-vue/ && \
+    echo "=== Vue client public directory ===" && \
+    ls -la client-vue/public/ || echo "No public directory"
 
-# 构建客户端
-RUN cd client && \
+# 构建Vue客户端
+RUN cd client-vue && \
     echo "=== Build environment ===" && \
     node --version && \
     npm --version && \
@@ -50,7 +46,7 @@ RUN cd client && \
 
 # 验证构建结果
 RUN echo "=== Build verification ===" && \
-    ls -la client/build/ && \
+    ls -la client-vue/dist/ && \
     echo "Build completed successfully"
 
 # 生产阶段
@@ -67,7 +63,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/config.js ./
-COPY --from=builder /app/client/build ./client/build
+COPY --from=builder /app/client-vue/dist ./client/build
 
 # 创建上传目录
 RUN mkdir -p uploads logs
@@ -99,4 +95,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # 使用入口脚本启动
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["npm", "start"] 
+CMD ["npm", "start"]

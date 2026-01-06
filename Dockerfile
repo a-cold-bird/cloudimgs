@@ -11,8 +11,6 @@ RUN apk add --no-cache git python3 make g++
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 # 禁用 Source Map 以减少内存占用和加快构建速度
 ENV GENERATE_SOURCEMAP=false
-# 禁用 ESLint 插件以避免构建期间的 Lint 错误中断
-ENV DISABLE_ESLINT_PLUGIN=true
 
 # 设置npm配置
 ENV NPM_CONFIG_AUDIT=false
@@ -26,14 +24,14 @@ COPY package*.json ./
 # 安装所有依赖（包括开发依赖，用于构建）
 RUN npm install --no-audit --no-fund --prefer-offline --verbose --legacy-peer-deps
 
-# 复制客户端package.json
-COPY client/package*.json ./client/
+# 复制客户端package.json (Vue客户端)
+COPY client-vue/package*.json ./client-vue/
 
-# 安装客户端依赖（添加详细输出和错误处理）
-RUN cd client && \
-    echo "=== Installing client dependencies ===" && \
-    npm install --no-audit --no-fund --prefer-offline --no-optional --verbose --legacy-peer-deps && \
-    echo "=== Client dependencies installed successfully ==="
+# 安装客户端依赖
+RUN cd client-vue && \
+    echo "=== Installing Vue client dependencies ===" && \
+    npm install --no-audit --no-fund --prefer-offline --verbose --legacy-peer-deps && \
+    echo "=== Vue client dependencies installed successfully ==="
 
 # 复制源代码
 COPY . .
@@ -45,43 +43,20 @@ RUN echo "=== Build Environment Info ===" && \
     echo "=== Current Directory ===" && \
     pwd && \
     ls -la && \
-    echo "=== Client Directory ===" && \
-    ls -la client/
+    echo "=== Vue Client Directory ===" && \
+    ls -la client-vue/
 
-# 验证客户端依赖安装
-RUN echo "=== Client Dependencies Check ===" && \
-    cd client && \
-    ls -la node_modules/ | head -10 && \
-    echo "=== React version ===" && \
-    npm list react && \
-    echo "=== React-scripts version ===" && \
-    npm list react-scripts
-
-# 构建客户端（添加详细输出和错误处理）
-RUN cd client && \
-    echo "=== Starting client build ===" && \
-    echo "=== Available memory ===" && \
-    free -h || echo "Memory info not available" && \
-    echo "=== Node options ===" && \
-    echo $NODE_OPTIONS && \
-    echo "=== NPM version ===" && \
-    npm --version && \
-    echo "=== Node version ===" && \
-    node --version && \
-    echo "=== Starting build process ===" && \
-    echo "=== Build environment ===" && \
-    echo "CI: $CI" && \
-    echo "NODE_ENV: $NODE_ENV" && \
-    echo "=== Running build command ===" && \
-    CI=false npm run build || (echo "Build failed with exit code $?" && echo "=== Build error details ===" && cat npm-debug.log* 2>/dev/null || echo "No npm debug log found" && exit 1)
+# 构建Vue客户端
+RUN cd client-vue && \
+    echo "=== Starting Vue client build ===" && \
+    npm run build && \
+    echo "=== Vue client build completed ==="
 
 # 验证构建结果
 RUN echo "=== Build Result ===" && \
-    ls -la client/build/ && \
+    ls -la client-vue/dist/ && \
     echo "=== Build files count ===" && \
-    find client/build -type f | wc -l && \
-    echo "=== Main JS file size ===" && \
-    ls -lh client/build/static/js/ && \
+    find client-vue/dist -type f | wc -l && \
     echo "=== Build successful ==="
 
 # 生产阶段
@@ -98,7 +73,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/config.js ./
-COPY --from=builder /app/client/build ./client/build
+COPY --from=builder /app/client-vue/dist ./client/build
 
 # 创建上传目录
 RUN mkdir -p uploads logs
@@ -130,4 +105,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # 使用入口脚本启动
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["npm", "start"] 
+CMD ["npm", "start"]

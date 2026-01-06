@@ -11,6 +11,7 @@ const sharp = require("sharp");
 const mime = require("mime-types");
 const mm = require("music-metadata");
 const exifr = require("exifr");
+const bcrypt = require("bcryptjs");
 
 const CACHE_DIR_NAME = ".cache";
 const TRASH_DIR_NAME = ".trash";
@@ -36,7 +37,9 @@ async function isAlbumLocked(dirPath) {
             const data = await fs.readJson(configPath);
             return !!data.password;
         }
-    } catch (e) {}
+    } catch (e) {
+        // 读取锁定状态失败，默认为未锁定
+    }
     return false;
 }
 
@@ -46,18 +49,47 @@ async function verifyAlbumPassword(dirPath, password) {
         const configPath = getAlbumPasswordPath(dirPath);
         if (await fs.pathExists(configPath)) {
             const data = await fs.readJson(configPath);
-            return data.password === password;
+            // 支持 bcrypt 哈希密码和明文密码（向后兼容）
+            if (data.password.startsWith('$2')) {
+                // bcrypt 哈希格式
+                return await bcrypt.compare(password, data.password);
+            } else {
+                // 明文密码（旧格式，向后兼容）
+                return data.password === password;
+            }
         }
         // If no password file, it's not locked, so any password (or none) is fine
         // But logic usually calls this only if isAlbumLocked is true
-        return true; 
+        return true;
     } catch (e) {
         return false;
     }
 }
 
 // 中间件
-app.use(cors());
+// CORS 配置
+const corsOptions = {
+  origin: (origin, callback) => {
+    // 如果未启用 CORS 白名单或允许所有来源
+    if (!config.security.cors.enabled || config.security.cors.allowedOrigins.includes("*")) {
+      callback(null, true);
+      return;
+    }
+    // 允许没有 origin 的请求（如 Postman、curl 或同源请求）
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    // 检查是否在白名单中
+    if (config.security.cors.allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS 策略不允许此来源"));
+    }
+  },
+  credentials: true,
+};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // 增加限制以支持大型 base64 数据
 app.use(express.static(path.join(__dirname, "../client/build")));
 app.enable("trust proxy");
@@ -206,7 +238,7 @@ const storage = multer.diskStorage({
       try {
         originalName = Buffer.from(originalName, "latin1").toString("utf8");
       } catch (e) {
-        // ignore
+        // latin1 转 utf8 失败，保持原始文件名
       }
     }
 
@@ -321,7 +353,7 @@ async function deleteThumbHash(filePath) {
             await fs.remove(cacheFile);
         }
     } catch (e) {
-        // ignore
+        // 删除缓存文件失败，忽略此错误
     }
 }
 
@@ -340,7 +372,7 @@ async function moveThumbHash(oldPath, newPath) {
              await fs.rename(oldCache, newCache);
         }
     } catch (e) {
-        // ignore
+        // 移动缩略图缓存失败，忽略此错误
     }
 }
 
@@ -466,9 +498,9 @@ async function updateMapCache() {
   }
 
   // Run tasks in chunks to avoid resource exhaustion
-  const CHUNK_SIZE = 50;
-  for (let i = 0; i < tasks.length; i += CHUNK_SIZE) {
-    await Promise.all(tasks.slice(i, i + CHUNK_SIZE).map((t) => t()));
+  const chunkSize = config.cache.mapCacheChunkSize;
+  for (let i = 0; i < tasks.length; i += chunkSize) {
+    await Promise.all(tasks.slice(i, i + chunkSize).map((t) => t()));
   }
 
   await fs.writeJSON(MAP_CACHE_PATH, newCache);
@@ -908,7 +940,7 @@ app.post("/api/album/password", requirePassword, async (req, res) => {
         if (dir === undefined) return res.status(400).json({ error: "Missing directory" });
 
         const configPath = getAlbumPasswordPath(dir);
-        
+
         if (!password) {
             // Remove password
             if (await fs.pathExists(configPath)) {
@@ -917,9 +949,12 @@ app.post("/api/album/password", requirePassword, async (req, res) => {
             return res.json({ success: true, message: "密码已移除" });
         }
 
+        // Hash password using bcrypt (cost factor 10)
+        const hashedPassword = await bcrypt.hash(password, 10);
+
         // Set password
         await fs.ensureDir(path.dirname(configPath));
-        await fs.writeJSON(configPath, { password });
+        await fs.writeJSON(configPath, { password: hashedPassword });
         res.json({ success: true, message: "密码设置成功" });
     } catch (e) {
         console.error("Set album password error:", e);
@@ -1172,7 +1207,7 @@ async function moveToTrash(filePath) {
   }
 }
 
-// 辅助函数：清理回收站（保留30天）
+// 辅助函数：清理回收站
 async function cleanTrash() {
   const trashDir = path.join(STORAGE_PATH, TRASH_DIR_NAME);
   if (!(await fs.pathExists(trashDir))) return;
@@ -1180,7 +1215,7 @@ async function cleanTrash() {
   try {
     const files = await fs.readdir(trashDir);
     const now = Date.now();
-    const EXPIRE_TIME = 30 * 24 * 60 * 60 * 1000; // 30天
+    const EXPIRE_TIME = config.trash.retentionDays * 24 * 60 * 60 * 1000;
 
     for (const file of files) {
       const filePath = path.join(trashDir, file);
@@ -1201,11 +1236,11 @@ async function cleanTrash() {
 
 // 初始化回收站清理任务
 function initTrashCleanup() {
-  console.log("[Trash] Initializing cleanup task...");
+  console.log(`[Trash] Initializing cleanup task (retention: ${config.trash.retentionDays} days, interval: ${config.trash.cleanupIntervalHours} hours)...`);
   // 立即执行一次
   cleanTrash();
-  // 每24小时执行一次
-  setInterval(cleanTrash, 24 * 60 * 60 * 1000);
+  // 按配置的间隔执行
+  setInterval(cleanTrash, config.trash.cleanupIntervalHours * 60 * 60 * 1000);
 }
 
 // 5. 删除图片（支持多层目录）
@@ -1455,7 +1490,9 @@ const readShares = async (dirPath) => {
         if (await fs.pathExists(filePath)) {
             return await fs.readJSON(filePath);
         }
-    } catch (e) {}
+    } catch (e) {
+        // 读取分享配置失败，返回空数组
+    }
     return [];
 };
 
@@ -1494,10 +1531,14 @@ async function getPreviewImages(dir, limit = 3) {
                     const relPath = path.join(dir, file).replace(/\\/g, "/");
                     previews.push(`/api/images/${relPath.split("/").map(encodeURIComponent).join("/")}`);
                 }
-            } catch (e) {}
+            } catch (e) {
+                // 获取文件状态失败，跳过该文件
+            }
         }
     }
-  } catch (e) {}
+  } catch (e) {
+      // 读取目录失败，返回空预览
+  }
   return previews;
 }
 

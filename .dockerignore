@@ -38,6 +38,9 @@ coverage
 # Build outputs (exclude node_modules but keep build directory)
 client/node_modules
 client/coverage
+client-vue/node_modules
+client-vue/coverage
+client-vue/dist
 
 # Logs
 logs
@@ -58,4 +61,4 @@ docker-compose*
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp

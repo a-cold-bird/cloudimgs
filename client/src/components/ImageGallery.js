@@ -100,6 +100,9 @@ const ImageItem = ({
                     handlePreview(image);
                 }
             }}
+            // 阻止图片容器的拖拽事件，防止误触发上传
+            onDragStart={(e) => e.preventDefault()}
+            draggable={false}
         >
             {/* Batch Selection Overlay */}
             {isBatchMode && (
@@ -175,6 +178,7 @@ const ImageItem = ({
                     alt={image.filename}
                     src={image.url}
                     draggable={false}
+                    onDragStart={(e) => e.preventDefault()}
                     loading="lazy"
                     onLoad={() => setLoaded(true)}
                     style={{
@@ -471,6 +475,10 @@ const ImageGallery = ({ onDelete, onRefresh, api, isAuthenticated, refreshTrigge
   
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+
+  // 追踪页面内是否有鼠标按下（用于区分外部文件拖入和页面内图片拖动）
+  // 原理：外部拖入文件时，页面不会有 mousedown 事件；而页面内拖动时会先触发 mousedown
+  const isInternalDragRef = useRef(false);
 
   // Drag Selection Logic
   const imageRefs = useRef(new Map());
@@ -894,6 +902,29 @@ const ImageGallery = ({ onDelete, onRefresh, api, isAuthenticated, refreshTrigge
     return () => window.removeEventListener('paste', handlePaste);
   }, [dir, isAuthenticated]); // Re-bind if dir changes so upload goes to correct dir
 
+  // 追踪页面内鼠标按下状态，用于区分内部拖动和外部文件拖入
+  useEffect(() => {
+      const handleMouseDown = (e) => {
+          // 当鼠标在页面内按下时，标记为内部拖动
+          isInternalDragRef.current = true;
+      };
+
+      const handleMouseUp = () => {
+          // 鼠标松开时，延迟重置标记（给drop事件处理一些时间）
+          setTimeout(() => {
+              isInternalDragRef.current = false;
+          }, 100);
+      };
+
+      window.addEventListener('mousedown', handleMouseDown);
+      window.addEventListener('mouseup', handleMouseUp);
+
+      return () => {
+          window.removeEventListener('mousedown', handleMouseDown);
+          window.removeEventListener('mouseup', handleMouseUp);
+      };
+  }, []);
+
   // Global Drag & Drop Listeners
   useEffect(() => {
       let dragCounter = 0;
@@ -902,6 +933,13 @@ const ImageGallery = ({ onDelete, onRefresh, api, isAuthenticated, refreshTrigge
           e.preventDefault();
           e.stopPropagation();
           dragCounter++;
+
+          // 如果是内部拖动（页面内鼠标按下后的拖动），不显示上传提示
+          if (isInternalDragRef.current) {
+              return;
+          }
+
+          // 只有外部文件拖入时才显示上传提示
           if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
               setIsDragOver(true);
           }
@@ -926,7 +964,13 @@ const ImageGallery = ({ onDelete, onRefresh, api, isAuthenticated, refreshTrigge
           e.stopPropagation();
           setIsDragOver(false);
           dragCounter = 0;
-          
+
+          // 如果是内部拖动，不触发上传
+          if (isInternalDragRef.current) {
+              return;
+          }
+
+          // 只有外部文件拖入时才触发上传
           if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
               handleUploadFiles(e.dataTransfer.files);
           }

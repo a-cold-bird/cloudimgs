@@ -7,7 +7,7 @@ module.exports = {
       ? process.env.ALLOWED_EXTENSIONS.split(",")
       : [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",".avif"],
 
-    // 允许的MIME类型
+    // 允许的MIME类型（仅图片类型）
     allowedMimeTypes: [
       "image/jpeg",
       "image/jpg",
@@ -17,7 +17,6 @@ module.exports = {
       "image/avif",
       "image/bmp",
       "image/svg+xml",
-      "audio/mpeg",
     ],
 
     // 文件大小限制（字节）
@@ -53,6 +52,27 @@ module.exports = {
     },
   },
 
+  // 回收站配置
+  trash: {
+    // 回收站文件保留天数
+    retentionDays: process.env.TRASH_RETENTION_DAYS
+      ? parseInt(process.env.TRASH_RETENTION_DAYS)
+      : 30,
+
+    // 清理任务执行间隔（小时）
+    cleanupIntervalHours: process.env.TRASH_CLEANUP_INTERVAL_HOURS
+      ? parseInt(process.env.TRASH_CLEANUP_INTERVAL_HOURS)
+      : 24,
+  },
+
+  // 缓存配置
+  cache: {
+    // 地图缓存处理时的并发任务数
+    mapCacheChunkSize: process.env.MAP_CACHE_CHUNK_SIZE
+      ? parseInt(process.env.MAP_CACHE_CHUNK_SIZE)
+      : 50,
+  },
+
   // 服务器配置
   server: {
     port: process.env.PORT || 3001,
@@ -81,6 +101,18 @@ module.exports = {
 
       // 是否启用密码保护
       enabled: !!process.env.PASSWORD,
+    },
+
+    // CORS 配置
+    cors: {
+      // 允许的来源列表（逗号分隔），设置为 "*" 允许所有来源
+      // 示例: "http://localhost:3000,https://example.com"
+      allowedOrigins: process.env.CORS_ORIGINS
+        ? process.env.CORS_ORIGINS.split(",").map(s => s.trim())
+        : ["*"],
+
+      // 是否启用 CORS 白名单（false 表示允许所有来源）
+      enabled: process.env.CORS_ENABLED === "true",
     },
   },
 };
