@@ -1,114 +1,69 @@
-## 云图 - 云端一隅，拾光深藏
+# CloudImgs（云图）
 
-[![云图 GitHub's stars](https://img.shields.io/github/stars/qazzxxx/cloudimgs?style=social)](https://github.com/qazzxxx/cloudimgs/stargazers)
-[![云图 GitHub's forks](https://img.shields.io/github/forks/qazzxxx/cloudimgs?style=social)](https://github.com/qazzxxx/cloudimgs/network/members)
-[![Release](https://img.shields.io/github/v/release/qazzxxx/cloudimgs)](https://github.com/qazzxxx/cloudimgs/releases)
+[![GitHub stars](https://img.shields.io/github/stars/a-cold-bird/cloudimgs?style=social)](https://github.com/a-cold-bird/cloudimgs/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/a-cold-bird/cloudimgs?style=social)](https://github.com/a-cold-bird/cloudimgs/network/members)
+[![Release](https://img.shields.io/github/v/release/a-cold-bird/cloudimgs)](https://github.com/a-cold-bird/cloudimgs/releases)
 
-> 项目的开始是用 **N8N处理相关流程** 时有很多图片处理的需求，找了很多开源项目有的比较老无人维护，有的需要购买PRO版本才能有更多的功能。以上种种原因吧，再加上自己也有NAS，所以写了一个比较自由开放的图床项目。
+一个自托管的现代图床：上传/管理/相册/分享/开放 API，并支持按 URL 参数进行图片实时处理（尺寸、质量、格式等）。
 
-### 🖥️ 在线演示
+## 功能
 
-**演示地址**：[https://yt.qazz.site](https://yt.qazz.site)
+- 开放 API：上传（含 base64）、随机图片、图片列表、删除、SVG 转 PNG、按参数处理图片等
+- 管理界面：瀑布流、拖拽多图上传、批量圈选删除、多级目录、相册分享
+- 体验优化：ThumbHash 缩略图、移动端适配、多主题
+- 安全：可选访问密码（`PASSWORD`）
 
-> 此演示为**纯静态 Mock 模式**部署，图片数据随机加载，不涉及真实后端调用。
-> - **访问密码**：`123456`
-> - **说明**：上传、删除等操作仅演示UI交互，数据不会保存，部分功能不可用。演示的加载图片列表体验比真实环境下体验差很多，真实环境下通过thumbhash生成缩略图优化加载。
+PicGo 插件：`https://github.com/qazzxxx/picgo-plugin-cloudimgs-uploader`
 
-## 🚀 功能特点
+## Docker Compose（推荐）
 
-- [x] 支持各种灵活开放API
-  - [x] 图片上传接口-支持base64
-  - [x] 随机图片接口
-  - [x] 获取指定图片（支持尺寸/质量/格式处理）
-  - [x] SVG 转 PNG接口
-  - [x] 图片列表接口
-  - [x] 图片删除接口
-- [x] 图片上传，多图拖拽一键上传
-- [x] 照片轨迹地图
-- [x] 支持压缩图片大小
-- [x] 支持URL参数实时处理图片 （如：image.jpg?w=500&h=300&q=80&fmt=webp 自动将原图转换为WebP 、宽500px，高300px，图片质量压缩到80% 返回）
-- [x] 支持PicGo插件直接安装使用[PicGo插件](https://github.com/qazzxxx/picgo-plugin-cloudimgs-uploader)
-- [x] 支持上传其他文件格式，全局上传
-- [x] 在线管理图片，瀑布流展示，批量圈选删除
-- [x] 相册分享
-- [x] 集成thumbhash无感生成缩略图加载图片列表优化
-- [x] 支持设置密钥，保护图片安全
-- [x] 支持多级子目录管理
-- [x] 支持 SVG 图片转换为 PNG 格式
-- [x] 支持图片压缩工具，可自定义压缩质量和尺寸
-- [x] 支持图片分享，一键复制图片链接
-- [x] 支持多主题样式切换
-- [x] 移动端适配
-- [x] 更多功能，等你来发现
-
-## 软件预览
-登录页面
-![云图 桌面端预览](client/public/login.jpg)
-
-
-图片管理页面
-![云图 桌面端预览](client/public/cloudimgs.jpg)
-
-批量圈选操作
-![云图 桌面端预览](client/public/batch.jpg)
-
-相册分享
-![云图 桌面端预览](client/public/share.jpg)
-
-整页上传
-![云图 桌面端预览](client/public/upload.jpg)
-
-照片轨迹地图
-![云图 桌面端预览](client/public/map.jpg)
-
-开放接口页面
-![云图 桌面端预览](client/public/api.jpg)
-
-移动端页面
-![云图 移动端预览](client/public/mobile.jpg)
-
-
-
-## 快速开始
-
-### 快速部署 - docker-compose.yml
+本仓库提供 `Dockerfile`，请使用本地构建（无预构建镜像）：
 
 ```yaml
 services:
   cloudimgs:
-    image: qazzxxx/cloudimgs:latest
+    build: .
+    container_name: cloudimgs-app
+    restart: unless-stopped
     ports:
       - "3001:3001"
-    volumes:
-      - ./uploads:/app/uploads:rw # 上传目录配置，明确读写权限
-    restart: unless-stopped
-    container_name: cloudimgs-app
     environment:
-      - PUID=1000  # 替换为您 NAS 用户的实际 ID (id -u)
-      - PGID=1000   # 替换为您 NAS 用户组的实际 ID (id -g)
-      - UMASK=002
       - NODE_ENV=production
       - PORT=3001
       - STORAGE_PATH=/app/uploads
-      # 密码保护配置（可选）
+      # 可选：启用访问密码
       # - PASSWORD=your_secure_password_here
+      # 可选：NAS 权限映射
+      - PUID=1000
+      - PGID=1000
+      - UMASK=002
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
 ```
 
-### 密码保护配置
+启动：`docker compose up -d --build`
 
-如需启用密码保护，请在环境变量中设置 `PASSWORD`：
+## 示例截图
 
-```bash
-environment:
-  - PASSWORD=your_secure_password_here
-```
+主页：
 
-**注意事项：**
+![主页](public/主页.png)
 
-- 设置 `PASSWORD` 环境变量后，系统将自动启用密码保护
-- 未设置 `PASSWORD` 时，系统无需密码即可访问
-- 密码验证成功后，登录状态会保存在浏览器本地存储中
+相册：
 
-## 历史Star
+![相册](public/相册.png)
 
-[![Star History Chart](https://api.star-history.com/svg?repos=qazzxxx/cloudimgs&type=date&legend=top-left)](https://www.star-history.com/#qazzxxx/cloudimgs&type=date&legend=top-left)
+## 数据持久化
+
+- 上传数据与缓存：挂载 `./uploads:/app/uploads`
+- 日志：挂载 `./logs:/app/logs`（可选，但建议）
+
+## 相关链接
+
+- 仓库：`https://github.com/a-cold-bird/cloudimgs`
+- Docker 部署文档：`DOCKER.md`
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=a-cold-bird/cloudimgs&type=date&legend=top-left)](https://www.star-history.com/#a-cold-bird/cloudimgs&type=date&legend=top-left)

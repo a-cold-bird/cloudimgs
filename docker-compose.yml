@@ -2,12 +2,11 @@ services:
   cloudimgs:
     # 本地构建
     build: .
-    # 或使用预构建镜像（注释 build，取消注释下行）
-    # image: qazzxxx/cloudimgs:latest
     ports:
       - "3001:3001"
     volumes:
       - ./uploads:/app/uploads
+      - ./logs:/app/logs
     restart: unless-stopped
     container_name: cloudimgs-app
     environment:

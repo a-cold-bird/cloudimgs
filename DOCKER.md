@@ -2,18 +2,19 @@
 
 ## 快速开始
 
-### 方式一：使用预构建镜像（推荐）
+### 方式一：本地构建（推荐）
 
 1. 创建 `docker-compose.yml` 文件：
 
 ```yaml
 services:
   cloudimgs:
-    image: qazzxxx/cloudimgs:latest
+    build: .
     ports:
       - "3001:3001"
     volumes:
       - ./uploads:/app/uploads:rw
+      - ./logs:/app/logs:rw
     restart: unless-stopped
     container_name: cloudimgs-app
     environment:
@@ -27,17 +28,17 @@ services:
 2. 启动服务：
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 3. 访问 `http://localhost:3001`
 
-### 方式二：本地构建
+### 方式二：克隆后构建（等同方式一）
 
 1. 克隆仓库：
 
 ```bash
-git clone https://github.com/icelin99/cloudimgs.git
+git clone https://github.com/a-cold-bird/cloudimgs.git
 cd cloudimgs
 ```
 
@@ -83,7 +84,7 @@ uploads/
 
 ```bash
 # 启动服务
-docker compose up -d
+docker compose up -d --build
 
 # 查看日志
 docker compose logs -f
@@ -94,9 +95,8 @@ docker compose down
 # 重新构建并启动
 docker compose up -d --build
 
-# 更新镜像（使用预构建镜像时）
-docker compose pull
-docker compose up -d
+# 本仓库无预构建镜像：更新代码后重新构建
+# docker compose up -d --build
 ```
 
 ## NAS 部署
