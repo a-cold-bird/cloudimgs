@@ -109,7 +109,24 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // 增加限制以支持大型 base64 数据
 app.use(express.static(path.join(__dirname, "../client-vue/dist")));
-app.enable("trust proxy");
+// 注意：express-rate-limit 会拒绝过于宽松的 trust proxy=true 设置（可被伪造 X-Forwarded-* 绕过限流）
+// 默认关闭；如确实在反向代理后（如 Nginx/Caddy/Traefik），请设置环境变量 TRUST_PROXY=1（或具体 hop 数）
+const TRUST_PROXY_RAW = process.env.TRUST_PROXY;
+if (TRUST_PROXY_RAW == null || TRUST_PROXY_RAW === "") {
+  app.set("trust proxy", false);
+} else {
+  const lowered = String(TRUST_PROXY_RAW).trim().toLowerCase();
+  if (lowered === "false" || lowered === "0") {
+    app.set("trust proxy", false);
+  } else if (lowered === "true") {
+    app.set("trust proxy", 1);
+  } else if (/^\d+$/.test(lowered)) {
+    app.set("trust proxy", Number.parseInt(lowered, 10));
+  } else {
+    // 允许使用 express 支持的值，例如：loopback / linklocal / uniquelocal
+    app.set("trust proxy", TRUST_PROXY_RAW);
+  }
+}
 
 // 速率限制配置 - 防止暴力破解和滥用
 const authLimiter = rateLimit({
@@ -145,12 +162,14 @@ app.get("/api/health", (req, res) => {
 });
 
 function getProtocol(req) {
-  const proto = req.headers["x-forwarded-proto"] || req.protocol;
+  const trustProxy = req.app.get("trust proxy");
+  const proto = trustProxy ? (req.headers["x-forwarded-proto"] || req.protocol) : req.protocol;
   if (Array.isArray(proto)) return proto[0];
   return String(proto).split(",")[0].trim();
 }
 function getHost(req) {
-  return req.headers["x-forwarded-host"] || req.get("host");
+  const trustProxy = req.app.get("trust proxy");
+  return trustProxy ? (req.headers["x-forwarded-host"] || req.get("host")) : req.get("host");
 }
 function getBaseUrl(req) {
   return `${getProtocol(req)}://${getHost(req)}`;
