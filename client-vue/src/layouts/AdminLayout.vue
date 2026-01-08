@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '@/components/common/AppSidebar.vue'
 import AppHeader from '@/components/common/AppHeader.vue'
+
+const route = useRoute()
 </script>
 
 <template>
@@ -14,7 +16,10 @@ import AppHeader from '@/components/common/AppHeader.vue'
     <!-- Main Content -->
     <div class="flex flex-col flex-1 overflow-hidden">
       <AppHeader />
-      <main class="flex-1 overflow-auto p-6">
+      <main
+        class="flex-1 overflow-auto"
+        :class="{ 'p-6': !route.meta.fullWidth }"
+      >
         <RouterView />
       </main>
     </div>

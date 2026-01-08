@@ -21,7 +21,8 @@ const router = createRouter({
                 {
                     path: '',
                     name: 'admin-home',
-                    component: () => import('@/views/HomeView.vue')
+                    component: () => import('@/views/HomeView.vue'),
+                    meta: { fullWidth: true }
                 },
                 {
                     path: 'albums',
@@ -31,7 +32,8 @@ const router = createRouter({
                 {
                     path: 'albums/:slug',
                     name: 'admin-album-detail',
-                    component: () => import('@/views/AlbumDetailView.vue')
+                    component: () => import('@/views/AlbumDetailView.vue'),
+                    meta: { fullWidth: true }
                 },
                 {
                     path: 'tags',

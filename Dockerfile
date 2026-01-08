@@ -73,14 +73,14 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/config.js ./
-COPY --from=builder /app/client-vue/dist ./client/build
+COPY --from=builder /app/client-vue/dist ./client-vue/dist
 
 # 创建上传目录
 RUN mkdir -p uploads logs
 
 # 验证文件复制
 RUN echo "=== Production Image Verification ===" && \
-    ls -la client/build/ && \
+    ls -la client-vue/dist/ && \
     echo "=== Node modules verification ===" && \
     ls -la node_modules/ | head -10
 

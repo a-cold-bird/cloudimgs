@@ -1,24 +1,27 @@
-# Dependencies
-node_modules/
-
-# Production builds
-client/build/
-client-vue/dist/
-
-# Environment variables
-.env
-.env.*
-!.env.example
-
 # Logs
 logs/
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Runtime data
-pids/
-*.pid
-*.seed
+# Dependencies
+node_modules/
+
+# Builds / output
+dist/
+dist-ssr/
+build/
+client/build/
+client-vue/dist/
+
+# Local env files
+.env
+.env.*
+!.env.example
+*.local
 
 # Coverage
 coverage/
@@ -29,6 +32,8 @@ coverage/
 .cache/
 .parcel-cache/
 .eslintcache
+.turbo/
+**/.vite/
 *.tgz
 
 # Editor
@@ -50,10 +55,8 @@ tmp/
 temp/
 *.tmp
 
-# Resolved merge files
-*.resolved
-
 # Local dev files
 start-dev.bat
 nul
-packages/
+progress.txt
+feature_list.json

@@ -4,7 +4,7 @@ import { type ImageItem } from '@/stores/gallery' // Fixed import path
 import { Dialog, DialogContent, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { X, Download, Info, Tag, Trash2, Plus, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { X, Download, Info, Tag, Trash2, Plus, ChevronLeft, ChevronRight, Pencil, Check } from 'lucide-vue-next'
 import api from '@/services/api'
 import { toast } from 'vue-sonner'
 
@@ -16,6 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'deleted', id: string): void
+  (e: 'renamed', id: string, newName: string, newId: string): void
   (e: 'prev'): void
   (e: 'next'): void
 }>()
@@ -25,18 +26,32 @@ const newTag = ref('')
 const isDeleting = ref(false)
 const confirmDelete = ref(false)
 
+// 编辑文件名相关状态
+const isEditingName = ref(false)
+const editingName = ref('')
+const isRenaming = ref(false)
+
 // Reset confirm state when image changes or modal closes
 watch(() => props.image, () => {
     confirmDelete.value = false
+    isEditingName.value = false
 })
 watch(() => props.open, (val) => {
-    if (!val) confirmDelete.value = false
+    if (!val) {
+        confirmDelete.value = false
+        isEditingName.value = false
+    }
 })
 
 async function handleAddTag() {
     if (!props.image || !newTag.value.trim()) return
     const tag = newTag.value.trim()
-    
+
+    // 确保 tags 数组存在
+    if (!props.image.tags) {
+        props.image.tags = []
+    }
+
     // Optimistic update check
     if (props.image.tags.includes(tag)) {
         newTag.value = ''
@@ -56,7 +71,7 @@ async function handleAddTag() {
 }
 
 async function handleRemoveTag(tag: string) {
-    if (!props.image) return
+    if (!props.image || !props.image.tags) return
     try {
         await api.post(`/tags/files/${props.image.id}/remove`, { tag })
         const idx = props.image.tags.indexOf(tag)
@@ -65,6 +80,62 @@ async function handleRemoveTag(tag: string) {
     } catch (e) {
         console.error(e)
         toast.error('移除标签失败')
+    }
+}
+
+// 开始编辑文件名
+function startEditName() {
+    if (!props.image) return
+    // 获取不带扩展名的文件名
+    const name = props.image.originalName
+    const lastDot = name.lastIndexOf('.')
+    editingName.value = lastDot > 0 ? name.substring(0, lastDot) : name
+    isEditingName.value = true
+}
+
+// 取消编辑
+function cancelEditName() {
+    isEditingName.value = false
+    editingName.value = ''
+}
+
+// 保存文件名
+async function saveFileName() {
+    if (!props.image || !editingName.value.trim()) return
+
+    const newName = editingName.value.trim()
+    const oldName = props.image.originalName
+    const lastDot = oldName.lastIndexOf('.')
+    const ext = lastDot > 0 ? oldName.substring(lastDot) : ''
+    const fullNewName = newName + ext
+
+    // 如果名称没变，直接退出编辑模式
+    if (fullNewName === oldName) {
+        cancelEditName()
+        return
+    }
+
+    isRenaming.value = true
+    try {
+        // 调用后端 PATCH /api/files/:id 接口更新文件名
+        const response = await api.patch(`/files/${props.image.id}`, { originalName: fullNewName })
+
+        if (response.data.success) {
+            // 更新本地数据
+            props.image.originalName = fullNewName
+            if (props.image.filename !== undefined) {
+                props.image.filename = fullNewName
+            }
+
+            toast.success('文件名已更新')
+            emit('renamed', props.image.id, fullNewName, props.image.id)
+        }
+        cancelEditName()
+    } catch (e) {
+        console.error('Failed to rename image:', e)
+        toast.error('重命名失败')
+    } finally {
+        isRenaming.value = false
     }
 }
 
@@ -177,7 +248,47 @@ function handleDownload() {
         <div v-if="image" class="space-y-4">
             <div>
                 <label class="text-xs text-muted-foreground font-medium">文件名</label>
-                <p class="text-sm break-all">{{ image.originalName }}</p>
+                <!-- 编辑模式 -->
+                <div v-if="isEditingName" class="flex items-center gap-2 mt-1">
+                    <Input
+                        v-model="editingName"
+                        class="h-8 text-sm flex-1"
+                        :disabled="isRenaming"
+                        @keyup.enter="saveFileName"
+                        @keyup.escape="cancelEditName"
+                        autofocus
+                    />
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        class="h-8 w-8 p-0"
+                        @click="saveFileName"
+                        :disabled="isRenaming || !editingName.trim()"
+                    >
+                        <Check class="h-4 w-4 text-green-600" />
+                    </Button>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        class="h-8 w-8 p-0"
+                        @click="cancelEditName"
+                        :disabled="isRenaming"
+                    >
+                        <X class="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                </div>
+                <!-- 显示模式 -->
+                <div v-else class="flex items-center gap-2 group/filename">
+                    <p class="text-sm break-all flex-1">{{ image.originalName }}</p>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        class="h-6 w-6 p-0 opacity-0 group-hover/filename:opacity-100 transition-opacity shrink-0"
+                        @click="startEditName"
+                    >
+                        <Pencil class="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                    </Button>
+                </div>
             </div>
             
             <div class="grid grid-cols-2 gap-4">
@@ -212,7 +323,7 @@ function handleDownload() {
                             <X class="h-3 w-3" />
                         </button>
                     </span>
-                    <span v-if="image.tags.length === 0" class="text-xs text-muted-foreground italic px-2">暂无标签</span>
+                    <span v-if="!image.tags?.length" class="text-xs text-muted-foreground italic px-2">暂无标签</span>
                  </div>
                  
                  <div class="flex items-center gap-2 mt-2">

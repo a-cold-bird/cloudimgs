@@ -9,8 +9,8 @@ import { MapPin, Loader2 } from 'lucide-vue-next'
 const { t } = useI18n()
 
 interface MapPhoto {
+  id: string
   filename: string
-  relPath: string
   lat: number
   lng: number
   date: string
@@ -24,7 +24,7 @@ const isLoading = ref(true)
 async function fetchMapPhotos() {
   isLoading.value = true
   try {
-    const response = await api.get('/map-data')
+    const response = await api.get('/map/photos')
     photos.value = response.data.data || response.data || []
   } catch (error: any) {
     console.error('Failed to fetch map photos:', error)
@@ -88,7 +88,7 @@ onMounted(() => {
         <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <div
             v-for="photo in photos.slice(0, 12)"
-            :key="photo.relPath"
+            :key="photo.id"
             class="relative aspect-square rounded-lg overflow-hidden bg-muted group cursor-pointer"
           >
             <img

@@ -12,6 +12,7 @@ const mime = require("mime-types");
 const mm = require("music-metadata");
 const exifr = require("exifr");
 const bcrypt = require("bcryptjs");
+const rateLimit = require("express-rate-limit");
 
 const CACHE_DIR_NAME = ".cache";
 const TRASH_DIR_NAME = ".trash";
@@ -49,13 +50,29 @@ async function verifyAlbumPassword(dirPath, password) {
         const configPath = getAlbumPasswordPath(dirPath);
         if (await fs.pathExists(configPath)) {
             const data = await fs.readJson(configPath);
+            // 空值检查：如果密码字段不存在或为空，验证失败
+            if (!data.password) {
+                return false;
+            }
             // 支持 bcrypt 哈希密码和明文密码（向后兼容）
             if (data.password.startsWith('$2')) {
                 // bcrypt 哈希格式
                 return await bcrypt.compare(password, data.password);
             } else {
                 // 明文密码（旧格式，向后兼容）
-                return data.password === password;
+                const isValid = data.password === password;
+                // 验证成功后自动升级为 bcrypt 哈希
+                if (isValid) {
+                    try {
+                        const hashedPassword = await bcrypt.hash(password, 10);
+                        await fs.writeJSON(configPath, { password: hashedPassword });
+                        console.log(`[Security] Auto-upgraded plaintext password to bcrypt for: ${dirPath}`);
+                    } catch (upgradeErr) {
+                        console.error(`[Security] Failed to upgrade password for ${dirPath}:`, upgradeErr);
+                        // 升级失败不影响验证结果
+                    }
+                }
+                return isValid;
             }
         }
         // If no password file, it's not locked, so any password (or none) is fine
@@ -91,8 +108,41 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // 增加限制以支持大型 base64 数据
-app.use(express.static(path.join(__dirname, "../client/build")));
+app.use(express.static(path.join(__dirname, "../client-vue/dist")));
 app.enable("trust proxy");
+
+// 速率限制配置 - 防止暴力破解和滥用
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15分钟
+  max: 20, // 每个IP最多20次尝试
+  message: { error: "登录尝试过多，请15分钟后再试" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1分钟
+  max: 100, // 每个IP每分钟最多100次API请求
+  message: { error: "请求过于频繁，请稍后再试" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// 对认证端点应用严格的速率限制
+app.use("/api/auth/verify", authLimiter);
+app.use("/api/album/verify", authLimiter);
+
+// 对一般API应用速率限制
+app.use("/api/", apiLimiter);
+
+// 健康检查端点 - 用于容器化部署和负载均衡
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
 
 function getProtocol(req) {
   const proto = req.headers["x-forwarded-proto"] || req.protocol;
@@ -377,9 +427,12 @@ async function moveThumbHash(oldPath, newPath) {
 }
 
 // 递归获取图片文件
-async function getAllImages(dir = "", authPassword = null) {
+async function getAllImages(dir = "", authPassword = null, rootPassword = null) {
   const absDir = safeJoin(STORAGE_PATH, dir);
-  
+
+  // 使用根密码或当前密码
+  const effectiveRootPassword = rootPassword || authPassword;
+
   // Check if current directory is locked
   if (await isAlbumLocked(dir)) {
       // If locked, verify password
@@ -397,14 +450,8 @@ async function getAllImages(dir = "", authPassword = null) {
         const relPath = path.join(dir, file);
         const stats = await fs.stat(filePath);
         if (stats.isDirectory()) {
-          // Recursive call - usually we don't pass password down to sub-albums automatically 
-          // unless we assume unlocking parent unlocks children? 
-          // For now, let's assume each locked album needs its own unlock. 
-          // So we pass null as password for sub-directories unless it matches exactly?
-          // Actually, standard behavior: listing root shouldn't show locked subfolders.
-          // Listing locked folder should show its contents.
-          // If subfolder is also locked, it stays hidden.
-          results = results.concat(await getAllImages(relPath, null));
+          // 递归调用时传递根密码，允许子目录继承访问权限
+          results = results.concat(await getAllImages(relPath, effectiveRootPassword, effectiveRootPassword));
         } else {
           const ext = path.extname(file).toLowerCase();
           if (config.upload.allowedExtensions.includes(ext)) {
@@ -525,335 +572,7 @@ const handleMulterError = (err, req, res, next) => {
   next();
 };
 
-// 处理 base64 编码的图片
-const handleBase64Image = async (base64Data, dir, originalName) => {
-  // 提取 MIME 类型和实际数据
-  const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-  if (!matches || matches.length !== 3) {
-    throw new Error('无效的 base64 图片格式');
-  }
-
-  const mimetype = matches[1];
-  if (!/^image\//.test(mimetype)) {
-    throw new Error('仅允许图片类型的 base64 上传');
-  }
-  const buffer = Buffer.from(matches[2], 'base64');
-  
-  // 生成文件名
-  const ext = mimetype.split('/')[1] || 'png';
-  const filename = `${Date.now()}-${Math.floor(Math.random() * 1000)}.${ext}`;
-  
-  // 确保目标目录存在
-  const targetDir = dir ? path.join(STORAGE_PATH, dir) : STORAGE_PATH;
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
-  }
-  
-  // 保存文件
-  const filePath = path.join(targetDir, filename);
-  await fs.promises.writeFile(filePath, buffer);
-  
-  // Generate ThumbHash
-  const thumbhash = await generateThumbHash(filePath);
-  
-  // 返回文件信息
-  const relPath = path.join(dir, filename).replace(/\\/g, "/");
-  const safeFilename = sanitizeFilename(filename);
-  
-  return {
-    filename: safeFilename,
-    originalName: originalName || safeFilename,
-    size: buffer.length,
-    mimetype,
-    uploadTime: new Date().toISOString(),
-    url: `/api/images/${relPath.split("/").map(encodeURIComponent).join("/")}`,
-    relPath,
-    thumbhash,
-  };
-};
-
-// 1. 上传 base64 编码图片接口
-app.post(
-  "/api/upload-base64",
-  requirePassword,
-  async (req, res) => {
-    try {
-      let dir = req.body.dir || req.query.dir || "";
-      dir = dir.replace(/\\/g, "/");
-      
-      // 检查是否提供了 base64 图片数据
-      if (!req.body.base64Image) {
-        return res.status(400).json({ success: false, error: "缺少 base64Image 参数" });
-      }
-      
-      try {
-        const fileInfo = await handleBase64Image(req.body.base64Image, dir, req.body.originalName);
-        return res.json({
-          success: true,
-          message: "base64 图片上传成功",
-          data: {
-            ...fileInfo,
-            fullUrl: `${getBaseUrl(req)}${fileInfo.url}`,
-          },
-        });
-      } catch (error) {
-        console.error("base64 上传错误:", error);
-        return res.status(400).json({ success: false, error: error.message || "base64 图片处理失败" });
-      }
-    } catch (error) {
-      console.error("上传错误:", error);
-      res.status(500).json({ success: false, error: "上传失败，请稍后重试" });
-    }
-  }
-);
-
-// 1.1 上传图片接口 (常规文件上传)
-app.post(
-  "/api/upload",
-  requirePassword,
-  upload.single("image"),
-  handleMulterError,
-  async (req, res) => {
-    try {
-      let dir = req.body.dir || req.query.dir || "";
-      dir = dir.replace(/\\/g, "/");
-      
-      // 处理常规文件上传
-      if (!req.file) {
-        return res.status(400).json({ success: false, error: "没有选择文件" });
-      }
-      
-      // 创建目标目录（如果不存在）
-      if (dir) {
-        const targetDir = path.join(STORAGE_PATH, dir);
-        if (!fs.existsSync(targetDir)) {
-          fs.mkdirSync(targetDir, { recursive: true });
-        }
-        
-        // 如果文件已上传但需要移动到指定目录
-        const oldPath = req.file.path;
-        const newPath = path.join(targetDir, req.file.filename);
-        if (oldPath !== newPath && fs.existsSync(oldPath)) {
-          fs.renameSync(oldPath, newPath);
-        }
-      }
-      
-      const relPath = path.join(dir, req.file.filename).replace(/\\/g, "/");
-
-      // 这里要对 originalName 做转码
-      let originalName = req.file.originalname;
-      // 修复：如果包含非 Latin1 字符 (> 255)，说明已经是 UTF-8，不需要转换
-      if (!/[^\u0000-\u00ff]/.test(originalName)) {
-        try {
-          originalName = Buffer.from(originalName, "latin1").toString("utf8");
-        } catch (e) {}
-      }
-
-      const safeFilename = sanitizeFilename(req.file.filename);
-
-      // Generate ThumbHash
-      const finalFilePath = safeJoin(STORAGE_PATH, relPath);
-      const thumbhash = await generateThumbHash(finalFilePath);
-
-      const fileInfo = {
-        filename: safeFilename,
-        originalName: originalName, // 用转码后的
-        size: req.file.size,
-        mimetype: req.file.mimetype,
-        uploadTime: new Date().toISOString(),
-        url: `/api/images/${relPath.split("/").map(encodeURIComponent).join("/")}`,
-        relPath,
-        fullUrl: `${getBaseUrl(req)}/api/images/${relPath.split("/").map(encodeURIComponent).join("/")}`,
-        thumbhash,
-      };
-      res.json({
-        success: true,
-        message: "图片上传成功",
-        data: fileInfo,
-      });
-    } catch (error) {
-      console.error("上传错误:", error);
-      res.status(500).json({ success: false, error: "上传失败，请稍后重试" });
-    }
-  }
-);
-
-/**
- * 使用music-metadata库解析MP3文件时长
- */
-async function parseMp3Duration(filePath) {
-  try {
-    // 使用music-metadata库解析音频文件
-    const metadata = await mm.parseFile(filePath, {
-      duration: true
-    });
-    
-    // 获取时长（秒）
-    return metadata.format.duration;
-  } catch (error) {
-    console.error('解析MP3时长失败:', error);
-    throw new Error('Invalid MP3 file format');
-  }
-}
-
-async function parseMp4Duration(filePath) {
-  try {
-    const metadata = await mm.parseFile(filePath, { duration: true });
-    return metadata.format.duration;
-  } catch (error) {
-    console.error('解析MP4时长失败:', error);
-    throw new Error('Invalid MP4 file format');
-  }
-}
-
-// 1.1. 上传任意文件接口
-app.post(
-  "/api/upload-file",
-  requirePassword,
-  uploadAny.single("file"),
-  handleMulterError,
-  async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ success: false, error: "没有选择文件" });
-      }
-      let dir = req.body.dir || req.query.dir || "";
-      dir = dir.replace(/\\/g, "/");
-      
-      // 创建目标目录（如果不存在）
-      if (dir) {
-        const targetDir = path.join(STORAGE_PATH, dir);
-        if (!fs.existsSync(targetDir)) {
-          fs.mkdirSync(targetDir, { recursive: true });
-        }
-      }
-      
-      // 检查是否传入了自定义文件名
-      const customFilename = req.body.filename || req.query.filename;
-      let finalFilename;
-      let displayName;
-      
-      if (customFilename) {
-        // 使用自定义文件名
-        finalFilename = sanitizeFilename(customFilename);
-        displayName = customFilename;
-        
-        // 重命名文件
-        const oldPath = req.file.path;
-        // 确保文件存储在指定目录
-        const targetDir = dir ? path.join(STORAGE_PATH, dir) : path.dirname(oldPath);
-        const newPath = path.join(targetDir, finalFilename);
-        
-        // 处理文件名冲突
-        let counter = 1;
-        let actualNewPath = newPath;
-        const ext = path.extname(finalFilename);
-        const nameWithoutExt = path.basename(finalFilename, ext);
-        
-        if (!config.upload.allowDuplicateNames) {
-          while (fs.existsSync(actualNewPath)) {
-            if (config.upload.duplicateStrategy === "timestamp") {
-              const newName = `${nameWithoutExt}_${Date.now()}_${counter}${ext}`;
-              actualNewPath = path.join(targetDir, newName);
-              finalFilename = newName;
-            } else if (config.upload.duplicateStrategy === "counter") {
-              const newName = `${nameWithoutExt}_${counter}${ext}`;
-              actualNewPath = path.join(targetDir, newName);
-              finalFilename = newName;
-            } else if (config.upload.duplicateStrategy === "overwrite") {
-              break;
-            }
-            counter++;
-          }
-        }
-        
-        // 执行重命名和移动
-        if (oldPath !== actualNewPath) {
-          fs.renameSync(oldPath, actualNewPath);
-        }
-      } else {
-        // 使用原有逻辑
-        finalFilename = sanitizeFilename(req.file.filename);
-        
-        // 这里要对 originalName 做转码
-        let originalName = req.file.originalname;
-        // 修复：如果包含非 Latin1 字符 (> 255)，说明已经是 UTF-8，不需要转换
-        if (!/[^\u0000-\u00ff]/.test(originalName)) {
-          try {
-            originalName = Buffer.from(originalName, "latin1").toString("utf8");
-          } catch (e) {}
-        }
-        displayName = originalName;
-        
-        // 如果指定了目录，则移动文件到该目录
-        if (dir) {
-          const oldPath = req.file.path;
-          const targetDir = path.join(STORAGE_PATH, dir);
-          const newPath = path.join(targetDir, finalFilename);
-          fs.renameSync(oldPath, newPath);
-        }
-      }
-      
-      const relPath = path.join(dir, finalFilename).replace(/\\/g, "/");
-      
-      // 计算MP3时长（如果适用）
-      let duration = null;
-      if (req.file.mimetype === 'audio/mpeg' || (customFilename && customFilename.toLowerCase().endsWith('.mp3'))) {
-        try {
-          const filePath = safeJoin(STORAGE_PATH, relPath);
-          const rawDuration = await parseMp3Duration(filePath);
-          
-          // 精确到小数点后2位，根据小数点后第3位向上取整
-          // 例如：9.114 -> 9.12, 9.125 -> 9.13, 9.199 -> 9.20
-          
-          // 将原始时长乘以1000并向上取整，然后除以100得到精确到小数点后2位的结果
-          // Math.ceil 向上取整，确保第三位小数有值时会进位
-          duration = Math.ceil(rawDuration * 1000) / 1000;
-          
-          // 格式化为保留2位小数
-          duration = parseFloat(duration.toFixed(2));
-        } catch (error) {
-          console.error("MP3时长解析失败:", error);
-          // 根据需求，不中断上传，但duration设为null
-        }
-      }
-
-      if (duration === null && (req.file.mimetype === 'video/mp4' || (customFilename && customFilename.toLowerCase().endsWith('.mp4')))) {
-        try {
-          const filePath = safeJoin(STORAGE_PATH, relPath);
-          const rawDuration = await parseMp4Duration(filePath);
-          duration = Math.ceil(rawDuration * 1000) / 1000;
-          duration = parseFloat(duration.toFixed(2));
-        } catch (error) {
-          console.error("MP4时长解析失败:", error);
-        }
-      }
-
-      const fileInfo = {
-        filename: finalFilename,
-        originalName: displayName,
-        customFilename: customFilename || null,
-        size: req.file.size,
-        mimetype: req.file.mimetype,
-        uploadTime: new Date().toISOString(),
-        url: `/api/files/${relPath.split("/").map(encodeURIComponent).join("/")}`,
-        relPath,
-        fullUrl: `${getBaseUrl(req)}/api/files/${relPath.split("/").map(encodeURIComponent).join("/")}`,
-        ...(duration !== null && { duration }), // 仅当计算成功时添加duration字段
-      };
-      res.json({
-        success: true,
-        message: "文件上传成功",
-        data: fileInfo,
-      });
-    } catch (error) {
-      console.error("文件上传错误:", error);
-      res.status(500).json({ success: false, error: "文件上传失败，请稍后重试" });
-    }
-  }
-);
-
-// 1.2 Map Data Endpoint
+// Map Data Endpoint
 app.get("/api/map-data", requirePassword, async (req, res) => {
   try {
     const data = await updateMapCache();
@@ -863,72 +582,797 @@ app.get("/api/map-data", requirePassword, async (req, res) => {
   }
 });
 
-// 2. 获取图片列表（支持dir参数、分页、搜索）
-app.get("/api/images", requirePassword, async (req, res) => {
+// GET /api/map/photos - 获取带有地理位置信息的图片列表 (兼容前端 MapView.vue)
+app.get("/api/map/photos", requirePassword, async (req, res) => {
   try {
-    let dir = req.query.dir || "";
-    dir = dir.replace(/\\/g, "/");
+    const data = await updateMapCache();
+    // 转换为前端期望的格式
+    const photos = data.map(item => ({
+      id: item.relPath,
+      filename: item.filename,
+      lat: item.lat,
+      lng: item.lng,
+      date: item.date,
+      thumbUrl: item.thumbUrl,
+      thumbhash: item.thumbhash
+    }));
+    res.json({ success: true, data: photos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    // 获取分页参数
-    const page = parseInt(req.query.page) || 1;
-    const pageSize = parseInt(req.query.pageSize) || 10;
-    const search = req.query.search || "";
+// ========== 公开 API 端点 (/i 系列) ==========
 
-    // Get album password from header
-    const albumPassword = req.headers["x-album-password"];
+// GET /i - 获取公开 API 端点列表
+app.get("/i", async (req, res) => {
+  try {
+    const directories = await getDirectories("");
 
-    // Check lock status before fetching
-    if (dir && await isAlbumLocked(dir)) {
-        if (!albumPassword || !(await verifyAlbumPassword(dir, albumPassword))) {
-             return res.status(403).json({ success: false, error: "需要访问密码", locked: true });
+    // 只返回公开的相册作为 API 端点
+    const endpoints = directories
+      .filter(dir => !dir.locked)
+      .map(dir => ({
+        name: dir.name,
+        endpoint: `/i/${encodeURIComponent(dir.name)}`,
+        usage: {
+          random: `/i/${encodeURIComponent(dir.name)}`,
+          list: `/i/${encodeURIComponent(dir.name)}?json=true`,
+          specific: `/i/${encodeURIComponent(dir.name)}/{filename}`
         }
+      }));
+
+    res.json({
+      success: true,
+      baseUrl: getBaseUrl(req),
+      endpoints
+    });
+  } catch (error) {
+    console.error("获取公开端点错误:", error);
+    res.status(500).json({ error: "获取公开端点失败" });
+  }
+});
+
+// GET /i/:slug - 随机图片或图片列表
+app.get("/i/:slug", async (req, res) => {
+  try {
+    const slug = decodeURIComponent(req.params.slug);
+    const dirPath = safeJoin(STORAGE_PATH, slug);
+
+    // 检查目录是否存在
+    if (!(await fs.pathExists(dirPath))) {
+      return res.status(404).json({ error: "目录不存在" });
     }
 
-    // 获取所有图片
+    // 检查是否被锁定
+    if (await isAlbumLocked(slug)) {
+      return res.status(403).json({ error: "此目录需要密码访问" });
+    }
+
+    const images = await getAllImages(slug);
+
+    if (images.length === 0) {
+      return res.status(404).json({ error: "没有找到图片" });
+    }
+
+    // 如果请求 json 格式，返回图片列表
+    if (req.query.json === "true") {
+      return res.json({
+        success: true,
+        data: images.map(img => ({
+          filename: img.filename,
+          url: `${getBaseUrl(req)}${img.url}`,
+          size: img.size
+        }))
+      });
+    }
+
+    // 否则随机重定向到一张图片
+    const randomImage = images[Math.floor(Math.random() * images.length)];
+    res.redirect(302, randomImage.url);
+  } catch (error) {
+    console.error("公开API错误:", error);
+    res.status(500).json({ error: "获取图片失败" });
+  }
+});
+
+// GET /i/:slug/:filename - 获取特定图片
+app.get("/i/:slug/*", async (req, res) => {
+  try {
+    const slug = decodeURIComponent(req.params.slug);
+    const filename = decodeURIComponent(req.params[0]);
+    const relPath = `${slug}/${filename}`;
+
+    // 检查是否被锁定
+    if (await isAlbumLocked(slug)) {
+      return res.status(403).json({ error: "此目录需要密码访问" });
+    }
+
+    const filePath = safeJoin(STORAGE_PATH, relPath);
+
+    if (!(await fs.pathExists(filePath))) {
+      return res.status(404).json({ error: "图片不存在" });
+    }
+
+    const mimeType = mime.lookup(filePath) || "application/octet-stream";
+    res.setHeader("Content-Type", mimeType);
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error("公开API错误:", error);
+    res.status(500).json({ error: "获取图片失败" });
+  }
+});
+
+// ========== 统一 API 端点 (兼容 client-vue 前端) ==========
+
+// GET /api/files - 获取文件列表 (兼容前端调用)
+app.get("/api/files", requirePassword, async (req, res) => {
+  try {
+    // 兼容前端参数: albumId -> dir, limit -> pageSize, q -> search
+    let dir = req.query.albumId || req.query.dir || "";
+    dir = dir.replace(/\\/g, "/");
+
+    const page = parseInt(req.query.page) || 1;
+    const pageSize = parseInt(req.query.limit) || parseInt(req.query.pageSize) || 20;
+    const search = req.query.q || req.query.search || "";
+
+    const albumPassword = req.headers["x-album-password"];
+
+    if (dir && await isAlbumLocked(dir)) {
+      if (!albumPassword || !(await verifyAlbumPassword(dir, albumPassword))) {
+        return res.status(403).json({ success: false, error: "需要访问密码", locked: true });
+      }
+    }
+
     let images = await getAllImages(dir, albumPassword);
+    images.sort((a, b) => new Date(b.uploadTime).getTime() - new Date(a.uploadTime).getTime());
 
-    // 按上传时间倒序排列
-    images.sort((a, b) => new Date(b.uploadTime) - new Date(a.uploadTime));
-
-    // 搜索过滤
     if (search) {
       images = images.filter((image) =>
         image.filename.toLowerCase().includes(search.toLowerCase())
       );
     }
 
-    // 计算分页
     const total = images.length;
     const startIndex = (page - 1) * pageSize;
     const endIndex = startIndex + pageSize;
     const paginatedImages = images.slice(startIndex, endIndex);
 
-    // Attach ThumbHash
+    // 转换为前端期望的格式
+    // 性能优化: 在循环外一次性读取标签数据，避免重复IO
+    const tagsData = await readAllTags();
+    const formattedImages = [];
     for (const img of paginatedImages) {
-        const filePath = safeJoin(STORAGE_PATH, img.relPath);
-        img.thumbhash = await getThumbHash(filePath);
+      const filePath = safeJoin(STORAGE_PATH, img.relPath);
+      const thumbhash = await getThumbHash(filePath);
+
+      // 获取 MIME 类型
+      const mimeType = mime.lookup(filePath) || "application/octet-stream";
+
+      // 尝试获取图片尺寸 (性能考虑：仅对分页后的图片获取)
+      let width = null;
+      let height = null;
+      try {
+        const metadata = await sharp(filePath).metadata();
+        width = metadata.width || null;
+        height = metadata.height || null;
+      } catch (e) {
+        // 获取元数据失败，忽略
+      }
+
+      // 获取文件标签 (使用循环外读取的数据)
+      const fileTags = tagsData.fileTags?.[img.relPath] || [];
+
+      formattedImages.push({
+        id: img.relPath, // 使用 relPath 作为唯一ID
+        filename: img.filename,
+        originalName: img.filename, // 兼容前端期望的字段名
+        relPath: img.relPath,
+        size: img.size,
+        uploadTime: img.uploadTime,
+        createdAt: img.uploadTime, // 兼容前端期望的字段名
+        url: img.url,
+        thumbhash: thumbhash,
+        mimeType: mimeType, // 添加 MIME 类型
+        width: width,
+        height: height,
+        tags: fileTags // 添加实际标签
+      });
     }
 
-    // 禁止缓存 API 响应
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
 
     res.json({
       success: true,
-      data: paginatedImages,
+      data: formattedImages,
       pagination: {
         current: page,
         pageSize: pageSize,
         total: total,
         totalPages: Math.ceil(total / pageSize),
+        hasMore: endIndex < total
       },
     });
   } catch (error) {
-    console.error("获取图片列表错误:", error);
-    res.status(500).json({ error: "获取图片列表失败" });
+    console.error("获取文件列表错误:", error);
+    res.status(500).json({ error: "获取文件列表失败" });
   }
 });
+
+// POST /api/files/upload - 上传文件 (兼容前端调用)
+app.post(
+  "/api/files/upload",
+  requirePassword,
+  upload.single("file"),
+  handleMulterError,
+  async (req, res) => {
+    try {
+      // 兼容前端参数: albumId -> dir
+      let dir = req.query.albumId || req.body.albumId || req.body.dir || req.query.dir || "";
+      dir = dir.replace(/\\/g, "/");
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: "没有选择文件" });
+      }
+
+      if (dir) {
+        const targetDir = path.join(STORAGE_PATH, dir);
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+
+        const oldPath = req.file.path;
+        const newPath = path.join(targetDir, req.file.filename);
+        if (oldPath !== newPath && fs.existsSync(oldPath)) {
+          fs.renameSync(oldPath, newPath);
+        }
+      }
+
+      const relPath = path.join(dir, req.file.filename).replace(/\\/g, "/");
+
+      let originalName = req.file.originalname;
+      if (!/[^\u0000-\u00ff]/.test(originalName)) {
+        try {
+          originalName = Buffer.from(originalName, "latin1").toString("utf8");
+        } catch (e) {}
+      }
+
+      const safeFilename = sanitizeFilename(req.file.filename);
+      const finalFilePath = safeJoin(STORAGE_PATH, relPath);
+      const thumbhash = await generateThumbHash(finalFilePath);
+
+      const fileInfo = {
+        id: relPath,
+        filename: safeFilename,
+        originalName: originalName,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        uploadTime: new Date().toISOString(),
+        url: `/api/images/${relPath.split("/").map(encodeURIComponent).join("/")}`,
+        relPath,
+        fullUrl: `${getBaseUrl(req)}/api/images/${relPath.split("/").map(encodeURIComponent).join("/")}`,
+        thumbhash,
+      };
+
+      res.json({
+        success: true,
+        message: "文件上传成功",
+        data: fileInfo,
+      });
+    } catch (error) {
+      console.error("上传错误:", error);
+      res.status(500).json({ success: false, error: "上传失败，请稍后重试" });
+    }
+  }
+);
+
+// POST /api/files/batch/delete - 批量删除文件
+app.post("/api/files/batch/delete", requirePassword, async (req, res) => {
+  try {
+    const { fileIds } = req.body;
+    if (!Array.isArray(fileIds) || fileIds.length === 0) {
+      return res.status(400).json({ error: "未选择文件" });
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const fileId of fileIds) {
+      try {
+        const relPath = decodeURIComponent(fileId).replace(/\\/g, "/");
+        const filePath = safeJoin(STORAGE_PATH, relPath);
+
+        if (await fs.pathExists(filePath)) {
+          await moveToTrash(filePath);
+          await deleteThumbHash(filePath);
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch (e) {
+        console.error(`Delete failed for ${fileId}:`, e);
+        failCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `成功删除 ${successCount} 个文件` + (failCount > 0 ? `，失败 ${failCount} 个` : ""),
+      data: { successCount, failCount }
+    });
+  } catch (e) {
+    console.error("Batch delete error:", e);
+    res.status(500).json({ error: "批量删除失败" });
+  }
+});
+
+// PATCH /api/files/:id - 更新文件信息（重命名等）(兼容前端 ImageDetailModal.vue)
+app.patch("/api/files/:id(*)", requirePassword, async (req, res) => {
+  try {
+    // id 是文件的 relPath（可能包含路径分隔符）
+    const relPath = decodeURIComponent(req.params.id).replace(/\\/g, "/");
+    const { originalName, newName } = req.body;
+
+    // 支持 originalName 或 newName 参数
+    const targetName = originalName || newName;
+
+    if (!targetName) {
+      return res.status(400).json({ success: false, error: "缺少新文件名参数" });
+    }
+
+    const oldFilePath = safeJoin(STORAGE_PATH, relPath);
+
+    if (!(await fs.pathExists(oldFilePath))) {
+      return res.status(404).json({ success: false, error: "文件不存在" });
+    }
+
+    const currentDir = path.dirname(relPath).replace(/\\/g, "/");
+    const origExt = path.extname(relPath);
+
+    // 处理新名称
+    let newFileName = sanitizeFilename(targetName.trim());
+    if (!path.extname(newFileName)) {
+      newFileName = `${path.basename(newFileName)}${origExt}`;
+    }
+
+    // 目标路径
+    const targetDir = safeJoin(STORAGE_PATH, currentDir === "." ? "" : currentDir);
+    await fs.ensureDir(targetDir);
+    let newRelPath = path.join(currentDir === "." ? "" : currentDir, newFileName).replace(/\\/g, "/");
+    let newFilePath = safeJoin(STORAGE_PATH, newRelPath);
+
+    // 处理重复策略
+    if (!config.upload.allowDuplicateNames && oldFilePath !== newFilePath) {
+      const nameWithoutExt = path.basename(newFileName, path.extname(newFileName));
+      const extension = path.extname(newFileName);
+      let finalName = newFileName;
+      let counter = 1;
+
+      while (await fs.pathExists(newFilePath)) {
+        if (config.upload.duplicateStrategy === "timestamp") {
+          finalName = `${nameWithoutExt}_${Date.now()}_${counter}${extension}`;
+        } else if (config.upload.duplicateStrategy === "counter") {
+          finalName = `${nameWithoutExt}_${counter}${extension}`;
+        } else if (config.upload.duplicateStrategy === "overwrite") {
+          break;
+        }
+        newRelPath = path.join(currentDir === "." ? "" : currentDir, finalName).replace(/\\/g, "/");
+        newFilePath = safeJoin(STORAGE_PATH, newRelPath);
+        counter++;
+      }
+    }
+
+    // 执行重命名
+    if (oldFilePath !== newFilePath) {
+      await fs.rename(oldFilePath, newFilePath);
+      await moveThumbHash(oldFilePath, newFilePath);
+
+      // 更新标签数据中的文件路径引用
+      const tagsData = await readAllTags();
+      if (tagsData.fileTags && tagsData.fileTags[relPath]) {
+        tagsData.fileTags[newRelPath] = tagsData.fileTags[relPath];
+        delete tagsData.fileTags[relPath];
+        await saveAllTags(tagsData);
+      }
+    }
+
+    const stats = await fs.stat(newFilePath);
+    const updated = {
+      id: newRelPath,
+      filename: path.basename(newRelPath),
+      originalName: path.basename(newRelPath),
+      relPath: newRelPath,
+      size: stats.size,
+      uploadTime: stats.mtime.toISOString(),
+      url: `/api/images/${newRelPath.split("/").map(encodeURIComponent).join("/")}`,
+    };
+
+    return res.json({ success: true, message: "文件名已更新", data: updated });
+  } catch (e) {
+    console.error("文件重命名错误:", e);
+    return res.status(400).json({ success: false, error: e.message || "重命名失败" });
+  }
+});
+
+// ========== Albums API (相册管理) ==========
+
+// GET /api/albums - 获取相册列表
+app.get("/api/albums", requirePassword, async (req, res) => {
+  try {
+    const parentId = req.query.parentId || "";
+    const flat = req.query.flat === "true";
+
+    const directories = await getDirectories(parentId);
+
+    // 转换为前端期望的格式
+    const albums = await Promise.all(directories.map(async (dir) => {
+      // 计算相册内文件数量
+      const images = await getAllImages(dir.path);
+      return {
+        id: dir.path,
+        slug: dir.path.replace(/\//g, "-") || dir.name,
+        name: dir.name,
+        parentId: parentId || null,
+        isPublic: !dir.locked,
+        fileCount: images.length,
+        previews: dir.previews,
+        createdAt: dir.mtime.toISOString(),
+        updatedAt: dir.mtime.toISOString()
+      };
+    }));
+
+    res.json({
+      success: true,
+      data: albums,
+    });
+  } catch (error) {
+    console.error("获取相册列表错误:", error);
+    res.status(500).json({ error: "获取相册列表失败" });
+  }
+});
+
+// POST /api/albums - 创建相册
+app.post("/api/albums", requirePassword, async (req, res) => {
+  try {
+    const { name, parentId, isPublic } = req.body;
+    if (!name) return res.status(400).json({ error: "Missing name" });
+
+    const basePath = parentId || "";
+    const relativePath = path.join(basePath, sanitizeFilename(name)).replace(/\\/g, "/");
+    const dirPath = safeJoin(STORAGE_PATH, relativePath);
+
+    if (await fs.pathExists(dirPath)) {
+      return res.status(400).json({ error: "相册已存在" });
+    }
+
+    await fs.ensureDir(dirPath);
+
+    res.json({
+      success: true,
+      message: "创建成功",
+      data: {
+        id: relativePath,
+        slug: relativePath.replace(/\//g, "-") || name,
+        name: name,
+        parentId: parentId || null,
+        isPublic: isPublic !== false,
+        fileCount: 0,
+        createdAt: new Date().toISOString()
+      }
+    });
+  } catch (e) {
+    console.error("Create album error:", e);
+    res.status(500).json({ error: "创建相册失败" });
+  }
+});
+
+// GET /api/albums/:id - 获取单个相册
+app.get("/api/albums/:id", requirePassword, async (req, res) => {
+  try {
+    const albumId = decodeURIComponent(req.params.id).replace(/-/g, "/");
+    const dirPath = safeJoin(STORAGE_PATH, albumId);
+
+    if (!(await fs.pathExists(dirPath))) {
+      return res.status(404).json({ error: "相册不存在" });
+    }
+
+    const stats = await fs.stat(dirPath);
+    if (!stats.isDirectory()) {
+      return res.status(404).json({ error: "相册不存在" });
+    }
+
+    const isLocked = await isAlbumLocked(albumId);
+    const images = isLocked ? [] : await getAllImages(albumId);
+    const previews = isLocked ? [] : await getPreviewImages(albumId, 3);
+
+    res.json({
+      success: true,
+      data: {
+        id: albumId,
+        slug: albumId.replace(/\//g, "-") || path.basename(albumId),
+        name: path.basename(albumId),
+        parentId: path.dirname(albumId) === "." ? null : path.dirname(albumId),
+        isPublic: !isLocked,
+        fileCount: images.length,
+        previews: previews,
+        createdAt: stats.birthtime ? stats.birthtime.toISOString() : stats.mtime.toISOString(),
+        updatedAt: stats.mtime.toISOString()
+      }
+    });
+  } catch (e) {
+    console.error("Get album error:", e);
+    res.status(500).json({ error: "获取相册失败" });
+  }
+});
+
+// PATCH /api/albums/:id - 更新相册
+app.patch("/api/albums/:id", requirePassword, async (req, res) => {
+  try {
+    const albumId = decodeURIComponent(req.params.id).replace(/-/g, "/");
+    const { name, isPublic } = req.body;
+    const dirPath = safeJoin(STORAGE_PATH, albumId);
+
+    if (!(await fs.pathExists(dirPath))) {
+      return res.status(404).json({ error: "相册不存在" });
+    }
+
+    // 处理公开/私有切换 (通过密码控制)
+    if (typeof isPublic === "boolean") {
+      const configPath = getAlbumPasswordPath(albumId);
+      if (isPublic) {
+        // 设为公开 = 移除密码
+        if (await fs.pathExists(configPath)) {
+          await fs.remove(configPath);
+        }
+      }
+      // 设为私有需要用户单独设置密码，这里不处理
+    }
+
+    // 处理重命名
+    let newAlbumId = albumId;
+    if (name && name !== path.basename(albumId)) {
+      const parentDir = path.dirname(albumId);
+      const newName = sanitizeFilename(name);
+      newAlbumId = path.join(parentDir === "." ? "" : parentDir, newName).replace(/\\/g, "/");
+      const newDirPath = safeJoin(STORAGE_PATH, newAlbumId);
+
+      if (await fs.pathExists(newDirPath)) {
+        return res.status(400).json({ error: "目标相册名已存在" });
+      }
+
+      await fs.rename(dirPath, newDirPath);
+    }
+
+    const newDirPath = safeJoin(STORAGE_PATH, newAlbumId);
+    const stats = await fs.stat(newDirPath);
+    const isLocked = await isAlbumLocked(newAlbumId);
+    const images = await getAllImages(newAlbumId);
+
+    res.json({
+      success: true,
+      message: "更新成功",
+      data: {
+        id: newAlbumId,
+        slug: newAlbumId.replace(/\//g, "-") || path.basename(newAlbumId),
+        name: path.basename(newAlbumId),
+        isPublic: !isLocked,
+        fileCount: images.length,
+        updatedAt: stats.mtime.toISOString()
+      }
+    });
+  } catch (e) {
+    console.error("Update album error:", e);
+    res.status(500).json({ error: "更新相册失败" });
+  }
+});
+
+// DELETE /api/albums/:id - 删除相册
+app.delete("/api/albums/:id", requirePassword, async (req, res) => {
+  try {
+    const albumId = decodeURIComponent(req.params.id).replace(/-/g, "/");
+    const dirPath = safeJoin(STORAGE_PATH, albumId);
+
+    if (!(await fs.pathExists(dirPath))) {
+      return res.status(404).json({ error: "相册不存在" });
+    }
+
+    // 将整个目录移到回收站
+    const dirName = path.basename(dirPath);
+    const timestamp = Date.now();
+    const trashName = `${dirName}_${timestamp}`;
+    const trashPath = path.join(STORAGE_PATH, TRASH_DIR_NAME, trashName);
+
+    await fs.ensureDir(path.dirname(trashPath));
+    await fs.move(dirPath, trashPath, { overwrite: true });
+
+    res.json({ success: true, message: "相册已删除" });
+  } catch (e) {
+    console.error("Delete album error:", e);
+    res.status(500).json({ error: "删除相册失败" });
+  }
+});
+
+// ========== Tags API (标签管理) ==========
+
+const TAGS_FILE = "tags.json";
+
+// 获取标签文件路径
+function getTagsFilePath() {
+  return path.join(STORAGE_PATH, CONFIG_DIR_NAME, TAGS_FILE);
+}
+
+// 读取所有标签
+async function readAllTags() {
+  try {
+    const filePath = getTagsFilePath();
+    if (await fs.pathExists(filePath)) {
+      return await fs.readJSON(filePath);
+    }
+  } catch (e) {
+    console.error("Read tags failed:", e);
+  }
+  return { tags: [], fileTags: {} };
+}
+
+// 保存所有标签
+async function saveAllTags(data) {
+  try {
+    const filePath = getTagsFilePath();
+    await fs.ensureDir(path.dirname(filePath));
+    await fs.writeJSON(filePath, data, { spaces: 2 });
+  } catch (e) {
+    console.error("Save tags failed:", e);
+  }
+}
+
+// GET /api/tags - 获取所有标签
+app.get("/api/tags", requirePassword, async (req, res) => {
+  try {
+    const data = await readAllTags();
+
+    // 兼容旧格式（字符串数组）和新格式（对象数组）
+    let tagsArray = data.tags || [];
+    const tagMeta = data.tagMeta || {}; // { tagName: { color, ... } }
+    const fileTags = data.fileTags || {};
+
+    // 计算每个标签的文件数量
+    const tagFileCount = {};
+    for (const fileId in fileTags) {
+      const tags = fileTags[fileId] || [];
+      for (const tag of tags) {
+        tagFileCount[tag] = (tagFileCount[tag] || 0) + 1;
+      }
+    }
+
+    // 转换为前端期望的格式
+    const formattedTags = tagsArray.map((tag, index) => {
+      // 如果是字符串，转换为对象
+      const tagName = typeof tag === 'string' ? tag : tag.name;
+      const meta = tagMeta[tagName] || {};
+      return {
+        id: tagName, // 使用名称作为ID
+        name: tagName,
+        color: meta.color || '#3b82f6', // 默认蓝色
+        fileCount: tagFileCount[tagName] || 0
+      };
+    });
+
+    res.json({
+      success: true,
+      data: formattedTags
+    });
+  } catch (e) {
+    console.error("Get tags error:", e);
+    res.status(500).json({ error: "获取标签失败" });
+  }
+});
+
+// POST /api/tags - 创建标签
+app.post("/api/tags", requirePassword, async (req, res) => {
+  try {
+    // 兼容前端两种参数格式: { tag } 或 { name }
+    const tagName = req.body.tag || req.body.name;
+    const tagColor = req.body.color || '#3b82f6';
+    if (!tagName) return res.status(400).json({ error: "Missing tag or name" });
+
+    const data = await readAllTags();
+
+    // 确保 tags 是字符串数组
+    if (!Array.isArray(data.tags)) data.tags = [];
+    if (!data.tagMeta) data.tagMeta = {};
+
+    // 添加标签（如果不存在）
+    if (!data.tags.includes(tagName)) {
+      data.tags.push(tagName);
+    }
+
+    // 保存标签元数据（颜色等）
+    data.tagMeta[tagName] = {
+      ...data.tagMeta[tagName],
+      color: tagColor
+    };
+
+    await saveAllTags(data);
+
+    // 返回新创建的标签对象
+    res.json({
+      success: true,
+      data: {
+        id: tagName,
+        name: tagName,
+        color: tagColor,
+        fileCount: 0
+      }
+    });
+  } catch (e) {
+    console.error("Create tag error:", e);
+    res.status(500).json({ error: "创建标签失败" });
+  }
+});
+
+// POST /api/tags/files/:id/add - 为文件添加标签
+app.post("/api/tags/files/:id/add", requirePassword, async (req, res) => {
+  try {
+    const fileId = decodeURIComponent(req.params.id);
+    const { tag } = req.body;
+    if (!tag) return res.status(400).json({ error: "Missing tag" });
+
+    const data = await readAllTags();
+
+    // 确保标签存在
+    if (!data.tags.includes(tag)) {
+      data.tags.push(tag);
+    }
+
+    // 为文件添加标签
+    if (!data.fileTags) data.fileTags = {};
+    if (!data.fileTags[fileId]) data.fileTags[fileId] = [];
+    if (!data.fileTags[fileId].includes(tag)) {
+      data.fileTags[fileId].push(tag);
+    }
+
+    await saveAllTags(data);
+
+    res.json({
+      success: true,
+      data: { tags: data.fileTags[fileId] }
+    });
+  } catch (e) {
+    console.error("Add tag error:", e);
+    res.status(500).json({ error: "添加标签失败" });
+  }
+});
+
+// POST /api/tags/files/:id/remove - 从文件移除标签
+app.post("/api/tags/files/:id/remove", requirePassword, async (req, res) => {
+  try {
+    const fileId = decodeURIComponent(req.params.id);
+    const { tag } = req.body;
+    if (!tag) return res.status(400).json({ error: "Missing tag" });
+
+    const data = await readAllTags();
+
+    if (data.fileTags && data.fileTags[fileId]) {
+      const idx = data.fileTags[fileId].indexOf(tag);
+      if (idx !== -1) {
+        data.fileTags[fileId].splice(idx, 1);
+        await saveAllTags(data);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: { tags: data.fileTags?.[fileId] || [] }
+    });
+  } catch (e) {
+    console.error("Remove tag error:", e);
+    res.status(500).json({ error: "移除标签失败" });
+  }
+});
+
+// ========== 原有 API 端点 (保留必要的) ==========
 
 // Set Album Password
 app.post("/api/album/password", requirePassword, async (req, res) => {
@@ -1425,7 +1869,7 @@ app.put("/api/images/*", requirePassword, async (req, res) => {
       relPath: newRelPath,
       size: stats.size,
       uploadTime: stats.mtime.toISOString(),
-      url: `/api/images/${encodeURIComponent(newRelPath)}`,
+      url: `/api/images/${newRelPath.split("/").map(encodeURIComponent).join("/")}`,
     };
     return res.json({ success: true, message: "更新成功", data: updated });
   } catch (e) {
@@ -1583,61 +2027,7 @@ async function getDirectories(dir = "") {
   return directories;
 }
 
-// Create Directory
-app.post("/api/directories", requirePassword, async (req, res) => {
-    try {
-        const { name } = req.body;
-        if (!name) return res.status(400).json({ error: "Missing name" });
-
-        // Allow multi-level directory creation
-        // Split by / or \ to handle path separators
-        const parts = name.split(/[/\\]/);
-        // Sanitize each part to ensure valid folder names
-        const safeParts = parts.map(p => sanitizeFilename(p)).filter(p => p.length > 0);
-        
-        if (safeParts.length === 0) {
-             return res.status(400).json({ error: "Invalid directory name" });
-        }
-
-        const relativePath = safeParts.join("/");
-        const dirPath = safeJoin(STORAGE_PATH, relativePath);
-
-        if (await fs.pathExists(dirPath)) {
-            return res.status(400).json({ error: "目录已存在" });
-        }
-
-        await fs.ensureDir(dirPath);
-        
-        // Return the created directory info
-        res.json({ 
-            success: true, 
-            message: "创建成功",
-            data: {
-                name: safeParts[safeParts.length - 1],
-                path: relativePath,
-                fullPath: dirPath
-            }
-        });
-    } catch (e) {
-        console.error("Create dir error:", e);
-        res.status(500).json({ error: "创建目录失败" });
-    }
-});
-
-app.get("/api/directories", requirePassword, async (req, res) => {
-  try {
-    let dir = req.query.dir || "";
-    dir = dir.replace(/\\/g, "/");
-    const directories = await getDirectories(dir);
-    res.json({
-      success: true,
-      data: directories,
-    });
-  } catch (error) {
-    console.error("获取目录列表错误:", error);
-    res.status(500).json({ error: "获取目录列表失败" });
-  }
-});
+// 注意: /api/directories 端点已移除，请使用 /api/albums 代替
 
 // Share API
 app.post("/api/share/generate", requirePassword, async (req, res) => {
@@ -1804,9 +2194,9 @@ app.get("/api/share/access", async (req, res) => {
 
         // Token valid, return content
         let images = await getAllImages(dir);
-        
+
         // Sort
-        images.sort((a, b) => new Date(b.uploadTime) - new Date(a.uploadTime));
+        images.sort((a, b) => new Date(b.uploadTime).getTime() - new Date(a.uploadTime).getTime());
 
         // Pagination
         const page = parseInt(req.query.page) || 1;
@@ -1848,7 +2238,7 @@ async function getStats(dir = "") {
   let storagePath = absDir;
   const files = await fs.readdir(absDir);
   for (const file of files) {
-    if (file === CACHE_DIR_NAME || file === CONFIG_DIR_NAME) continue;
+    if (file === CACHE_DIR_NAME || file === CONFIG_DIR_NAME || file === TRASH_DIR_NAME) continue;
     const filePath = path.join(absDir, file);
     const stats = await fs.stat(filePath);
     if (stats.isDirectory()) {
@@ -2103,13 +2493,13 @@ app.post("/api/svg2png", requirePassword, async (req, res) => {
   }
 });
 
-// 路由回退处理 - 所有非API路由都返回React应用
+// 路由回退处理 - 所有非API路由都返回Vue应用
 app.get("*", (req, res) => {
   // 如果是API路由，不处理
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({ error: "API接口不存在" });
   }
 
-  // 对于所有其他路由，返回React应用的index.html
-  res.sendFile(path.join(__dirname, "../client/build/index.html"));
+  // 对于所有其他路由，返回Vue应用的index.html
+  res.sendFile(path.join(__dirname, "../client-vue/dist/index.html"));
 });

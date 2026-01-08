@@ -8,6 +8,8 @@ const PAGE_SIZE = 50
 export interface ImageItem {
     id: string
     originalName: string
+    filename?: string
+    relPath?: string // 文件相对路径，用于API调用
     size: number
     mimeType: string
     width?: number

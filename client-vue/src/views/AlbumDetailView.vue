@@ -54,35 +54,36 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-        <div class="flex items-center gap-4">
-            <Button variant="ghost" size="icon" @click="router.back()">
-                <ArrowLeft class="h-4 w-4" />
-            </Button>
-            <div>
-                <h2 class="text-2xl font-bold tracking-tight" v-if="album">{{ album.name }}</h2>
-                <h2 class="text-2xl font-bold tracking-tight" v-else>Loading...</h2>
-                <p class="text-muted-foreground" v-if="album">
-                    {{ album.isPublic ? '公开相册' : '私有相册' }} · {{ album.fileCount || 0 }} items
-                </p>
-            </div>
-        </div>
-
-        <div v-if="album" class="flex items-center space-x-2">
-            <Switch v-model="album.isPublic" @update:model-value="handlePublicToggle" id="public-mode" />
-            <label for="public-mode" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer">
-                {{ album.isPublic ? '公开' : '私有' }}
-            </label>
-        </div>
-    </div>
-
+  <div class="min-h-full">
     <div v-if="loading" class="py-10 text-center">
         Loading...
     </div>
-    
-    <ImageGallery v-else-if="album" :album-id="album.id" :title="album.name" />
-    
+
+    <ImageGallery v-else-if="album" :album-id="album.id" :show-title="false">
+        <template #header-start>
+            <div class="flex items-center gap-4">
+                <Button variant="ghost" size="icon" @click="router.back()">
+                    <ArrowLeft class="h-4 w-4" />
+                </Button>
+                <div>
+                    <h2 class="text-2xl font-bold tracking-tight">{{ album.name }}</h2>
+                    <p class="text-muted-foreground text-sm">
+                        {{ album.isPublic ? '公开' : '私有' }} · {{ album.fileCount || 0 }} items
+                    </p>
+                </div>
+            </div>
+        </template>
+
+        <template #header-actions>
+            <div class="flex items-center space-x-2 mr-2 border-r pr-4">
+                <Switch v-model="album.isPublic" @update:model-value="handlePublicToggle" id="public-mode" />
+                <label for="public-mode" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer hidden sm:inline-block">
+                    {{ album.isPublic ? '公开' : '私有' }}
+                </label>
+            </div>
+        </template>
+    </ImageGallery>
+
     <div v-else class="py-10 text-center text-muted-foreground">
         Album not found.
     </div>

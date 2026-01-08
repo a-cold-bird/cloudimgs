@@ -62,10 +62,11 @@ function handleImageLoad() {
 </script>
 
 <template>
-  <div 
-    class="relative group rounded-lg overflow-hidden cursor-pointer bg-muted/50 select-none animate-in fade-in duration-500 break-inside-avoid shadow-sm hover:shadow-lg transition-all border border-transparent hover:border-primary/30"
+  <div
+    class="image-card relative group rounded-lg overflow-hidden cursor-pointer bg-muted/50 select-none animate-in fade-in duration-500 break-inside-avoid shadow-sm hover:shadow-lg transition-all border border-transparent hover:border-primary/30"
     :class="{'ring-2 ring-primary ring-offset-4 ring-offset-background': selected}"
     :style="{ aspectRatio: aspectRatio }"
+    :data-image-id="image.id"
     @click="emit('click', image)"
   >
     <!-- Selection overlay -->
@@ -103,7 +104,7 @@ function handleImageLoad() {
 
     <!-- Bottom info overlay -->
     <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-4 opacity-0 group-hover:opacity-100 transition-all duration-500 translate-y-4 group-hover:translate-y-0">
-      <p class="text-white text-[10px] font-bold tracking-wider opacity-60 uppercase mb-1">{{ image.mimeType.split('/')[1] }}</p>
+      <p class="text-white text-[10px] font-bold tracking-wider opacity-60 uppercase mb-1">{{ image.mimeType?.split('/')[1] || 'file' }}</p>
       <p class="text-white text-xs font-semibold truncate drop-shadow-md">{{ image.originalName }}</p>
     </div>
   </div>
