@@ -3,16 +3,20 @@ import { ref } from 'vue'
 import type { AxiosProgressEvent } from 'axios'
 import api, { getUploadConfig } from '@/services/api'
 import { toast } from 'vue-sonner'
+import { calculateFileChecksum } from '@/lib/utils'
 
 // 常量定义
 const ROOT_ALBUM_ID = '' // 根目录使用空字符串表示
+const MAX_RETRY_COUNT = 3 // 最大重试次数
 
 export interface UploadFileItem {
     file: File
     progress: number
-    status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled'
+    status: 'pending' | 'hashing' | 'uploading' | 'success' | 'error' | 'cancelled'
     error?: string
     albumId?: string
+    checksum?: string // 文件校验和
+    retryCount?: number // 重试次数
 }
 
 export const useUploadStore = defineStore('upload', () => {
@@ -30,7 +34,8 @@ export const useUploadStore = defineStore('upload', () => {
             file: f,
             progress: 0,
             status: 'pending',
-            albumId: albumId
+            albumId: albumId,
+            retryCount: 0
         }))
         queue.value.push(...newItems)
         processQueue()
@@ -57,6 +62,22 @@ export const useUploadStore = defineStore('upload', () => {
         if (!item) return
 
         isUploading.value = true
+
+        // Step 1: Calculate checksum if not already done
+        if (!item.checksum) {
+            item.status = 'hashing'
+            try {
+                item.checksum = await calculateFileChecksum(item.file)
+            } catch (err) {
+                console.error('Failed to calculate checksum:', err)
+                item.status = 'error'
+                item.error = '计算校验和失败'
+                isUploading.value = false
+                processQueue()
+                return
+            }
+        }
+
         item.status = 'uploading'
 
         // Create new AbortController for this upload
@@ -65,6 +86,7 @@ export const useUploadStore = defineStore('upload', () => {
         try {
             const formData = new FormData()
             formData.append('file', item.file)
+            formData.append('checksum', item.checksum) // 添加校验和
 
             // Determine album ID: specific item ID > global selected ID
             const targetAlbumId = item.albumId || selectedAlbumId.value || undefined
@@ -94,10 +116,23 @@ export const useUploadStore = defineStore('upload', () => {
                 item.status = 'cancelled'
                 item.error = '已取消'
             } else {
-                console.error(error)
-                item.status = 'error'
-                item.error = '上传失败'
-                toast.error(`上传失败: ${item.file.name}`)
+                // Check if it's a checksum mismatch error
+                const isChecksumError = error.response?.data?.code === 'CHECKSUM_MISMATCH'
+                const retryCount = item.retryCount || 0
+
+                if (retryCount < MAX_RETRY_COUNT) {
+                    // Retry
+                    item.retryCount = retryCount + 1
+                    item.status = 'pending'
+                    item.progress = 0
+                    console.warn(`Upload failed, retrying (${item.retryCount}/${MAX_RETRY_COUNT}): ${item.file.name}`)
+                    toast.warning(`上传失败，正在重试 (${item.retryCount}/${MAX_RETRY_COUNT}): ${item.file.name}`)
+                } else {
+                    console.error(error)
+                    item.status = 'error'
+                    item.error = isChecksumError ? '文件完整性校验失败' : '上传失败'
+                    toast.error(`上传失败: ${item.file.name}`)
+                }
             }
         } finally {
             abortController = null

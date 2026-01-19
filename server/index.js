@@ -129,28 +129,54 @@ if (TRUST_PROXY_RAW == null || TRUST_PROXY_RAW === "") {
 }
 
 // 速率限制配置 - 防止暴力破解和滥用
+// 禁用 trust proxy 验证，因为我们已经在上面正确配置了 trust proxy
+const rateLimitValidate = { trustProxy: false };
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15分钟
   max: 20, // 每个IP最多20次尝试
   message: { error: "登录尝试过多，请15分钟后再试" },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: rateLimitValidate,
 });
 
 const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1分钟
-  max: 100, // 每个IP每分钟最多100次API请求
+  windowMs: process.env.RATE_LIMIT_API_WINDOW_MS
+    ? parseInt(process.env.RATE_LIMIT_API_WINDOW_MS, 10)
+    : 1 * 60 * 1000, // 1分钟
+  max: process.env.RATE_LIMIT_API_MAX
+    ? parseInt(process.env.RATE_LIMIT_API_MAX, 10)
+    : 1000, // 默认放宽：避免图片/列表请求触发 429 影响上传
   message: { error: "请求过于频繁，请稍后再试" },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: rateLimitValidate,
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: process.env.RATE_LIMIT_UPLOAD_WINDOW_MS
+    ? parseInt(process.env.RATE_LIMIT_UPLOAD_WINDOW_MS, 10)
+    : 1 * 60 * 1000,
+  max: process.env.RATE_LIMIT_UPLOAD_MAX
+    ? parseInt(process.env.RATE_LIMIT_UPLOAD_MAX, 10)
+    : 300,
+  message: { error: "上传过于频繁，请稍后再试" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: rateLimitValidate,
 });
 
 // 对认证端点应用严格的速率限制
 app.use("/api/auth/verify", authLimiter);
 app.use("/api/album/verify", authLimiter);
 
-// 对一般API应用速率限制
-app.use("/api/", apiLimiter);
+// 对一般 API 应用速率限制（不对静态图片下载限流，避免前端列表加载触发 429）
+app.use("/api/", (req, res, next) => {
+  if (req.method === "OPTIONS") return next();
+  if (req.path.startsWith("/images/")) return next();
+  return apiLimiter(req, res, next);
+});
 
 // 健康检查端点 - 用于容器化部署和负载均衡
 app.get("/api/health", (req, res) => {
@@ -823,10 +849,12 @@ app.get("/api/files", requirePassword, async (req, res) => {
 // POST /api/files/upload - 上传文件 (兼容前端调用)
 app.post(
   "/api/files/upload",
+  uploadLimiter,
   requirePassword,
   upload.single("file"),
   handleMulterError,
   async (req, res) => {
+    let finalFilePath = null; // 用于错误时清理文件
     try {
       // 兼容前端参数: albumId -> dir
       let dir = req.query.albumId || req.body.albumId || req.body.dir || req.query.dir || "";
@@ -850,6 +878,27 @@ app.post(
       }
 
       const relPath = path.join(dir, req.file.filename).replace(/\\/g, "/");
+      finalFilePath = safeJoin(STORAGE_PATH, relPath);
+
+      // 校验文件完整性
+      const clientChecksum = req.body.checksum;
+      if (clientChecksum) {
+        // 计算服务端文件的 SHA-256
+        const fileBuffer = await fs.readFile(finalFilePath);
+        const serverChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+        if (clientChecksum !== serverChecksum) {
+          // 校验失败，删除不完整的文件
+          console.error(`[Upload] Checksum mismatch for ${relPath}: client=${clientChecksum.substring(0, 16)}... server=${serverChecksum.substring(0, 16)}...`);
+          await fs.remove(finalFilePath);
+          return res.status(400).json({
+            success: false,
+            error: "文件完整性校验失败，请重新上传",
+            code: "CHECKSUM_MISMATCH"
+          });
+        }
+        console.log(`[Upload] Checksum verified for ${relPath}`);
+      }
 
       let originalName = req.file.originalname;
       if (!/[^\u0000-\u00ff]/.test(originalName)) {
@@ -859,7 +908,6 @@ app.post(
       }
 
       const safeFilename = sanitizeFilename(req.file.filename);
-      const finalFilePath = safeJoin(STORAGE_PATH, relPath);
       const thumbhash = await generateThumbHash(finalFilePath);
 
       const fileInfo = {
@@ -882,6 +930,14 @@ app.post(
       });
     } catch (error) {
       console.error("上传错误:", error);
+      // 如果出错且文件已保存，尝试清理
+      if (finalFilePath && await fs.pathExists(finalFilePath)) {
+        try {
+          await fs.remove(finalFilePath);
+        } catch (cleanupErr) {
+          console.error("清理失败文件出错:", cleanupErr);
+        }
+      }
       res.status(500).json({ success: false, error: "上传失败，请稍后重试" });
     }
   }
