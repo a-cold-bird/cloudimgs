@@ -22,25 +22,25 @@ export async function calculateFileMD5(file: File): Promise<string> {
 }
 
 /**
- * 计算文件的 SHA-256 哈希值（分块读取，适合大文件）
+ * 计算文件的 SHA-256 哈希值
  * 返回 hex 字符串
+ * 注意：Web Crypto API 只在安全上下文（HTTPS 或 localhost）中可用
+ * 如果不可用，返回空字符串，服务端将跳过校验
  */
 export async function calculateFileChecksum(file: File): Promise<string> {
-  // 对于大文件，分块读取以避免内存问题
-  const CHUNK_SIZE = 2 * 1024 * 1024 // 2MB chunks
+  // 检查 Web Crypto API 是否可用（仅在安全上下文中可用）
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    console.warn('[Checksum] Web Crypto API 不可用（需要 HTTPS 或 localhost），跳过完整性校验')
+    return ''
+  }
 
-  if (file.size <= CHUNK_SIZE) {
-    // 小文件直接计算
+  try {
     const buffer = await file.arrayBuffer()
     const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
     const hashArray = Array.from(new Uint8Array(hashBuffer))
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+  } catch (err) {
+    console.error('[Checksum] 计算失败:', err)
+    return ''
   }
-
-  // 大文件：直接读取整个文件（浏览器会优化）
-  // 注意：Web Crypto API 不支持流式哈希，所以大文件仍需一次性读取
-  const buffer = await file.arrayBuffer()
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 }

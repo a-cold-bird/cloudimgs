@@ -63,18 +63,16 @@ export const useUploadStore = defineStore('upload', () => {
 
         isUploading.value = true
 
-        // Step 1: Calculate checksum if not already done
-        if (!item.checksum) {
+        // Step 1: Calculate checksum if not already done (undefined means not calculated yet)
+        if (item.checksum === undefined) {
             item.status = 'hashing'
             try {
+                // 返回空字符串表示无法计算（非安全上下文），不视为错误
                 item.checksum = await calculateFileChecksum(item.file)
             } catch (err) {
                 console.error('Failed to calculate checksum:', err)
-                item.status = 'error'
-                item.error = '计算校验和失败'
-                isUploading.value = false
-                processQueue()
-                return
+                // 设置为空字符串，表示已尝试但失败，继续上传但不校验
+                item.checksum = ''
             }
         }
 
@@ -86,7 +84,10 @@ export const useUploadStore = defineStore('upload', () => {
         try {
             const formData = new FormData()
             formData.append('file', item.file)
-            formData.append('checksum', item.checksum) // 添加校验和
+            // 只有非空 checksum 才添加，服务端会根据是否有 checksum 决定是否校验
+            if (item.checksum) {
+                formData.append('checksum', item.checksum)
+            }
 
             // Determine album ID: specific item ID > global selected ID
             const targetAlbumId = item.albumId || selectedAlbumId.value || undefined
