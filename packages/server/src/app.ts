@@ -2,6 +2,9 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
+import { serveStatic } from '@hono/node-server/serve-static';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
 import { auth } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
 import { albumsRouter } from './routes/albums.js';
@@ -20,6 +23,22 @@ import { getRateLimitStats, rateLimit } from './middleware/rateLimit.js';
 
 // Create Hono app
 const app = new Hono();
+
+function resolveFrontendDistPath(): string | null {
+    const candidates = [
+        resolve(process.cwd(), 'client-vue', 'dist'),
+        resolve(process.cwd(), '..', 'client-vue', 'dist'),
+        resolve(process.cwd(), '..', '..', 'client-vue', 'dist'),
+    ];
+
+    for (const item of candidates) {
+        if (existsSync(resolve(item, 'index.html'))) {
+            return item;
+        }
+    }
+
+    return null;
+}
 
 // Initialize storage driver
 const storage = createStorageDriver(config.storage.type, {
@@ -110,8 +129,21 @@ app.get('/api/admin/rate-limit-stats', requireAuth, (c) => {
 
 // ==================== Static Files (for production) ====================
 
-// In production, serve the Vue frontend
-// This is typically handled by the build process / Dockerfile
+const frontendDistPath = resolveFrontendDistPath();
+if (frontendDistPath) {
+    // Static assets emitted by Vite build (e.g. /assets/*.js, /assets/*.css)
+    app.use('/assets/*', serveStatic({ root: frontendDistPath }));
+    app.use('/favicon.ico', serveStatic({ root: frontendDistPath }));
+
+    // SPA fallback: for any non-API route, always return index.html.
+    app.get('*', async (c, next) => {
+        const path = c.req.path;
+        if (path.startsWith('/api') || path.startsWith('/i')) {
+            return next();
+        }
+        return serveStatic({ root: frontendDistPath, path: 'index.html' })(c, next);
+    });
+}
 
 // ==================== Error Handling ====================
 
