@@ -49,6 +49,10 @@ Thumbs.db
 
 # Uploads (user data)
 uploads/
+packages/server/data/
+*.db
+*.db-shm
+*.db-wal
 
 # Temporary
 tmp/
@@ -60,3 +64,5 @@ start-dev.bat
 nul
 progress.txt
 feature_list.json
+prompt.txt
+torch-performance-test-data/

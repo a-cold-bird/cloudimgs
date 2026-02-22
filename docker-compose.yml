@@ -3,13 +3,15 @@ services:
     # 本地构建
     build: .
     ports:
-      - "3001:3001"
+      - "3003:3003"
     volumes:
       - ./uploads:/app/uploads
+      - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
     container_name: cloudimgs-app
     environment:
       - NODE_ENV=production
+      - PORT=3003
       # 密码保护（可选）
       # - PASSWORD=your_password

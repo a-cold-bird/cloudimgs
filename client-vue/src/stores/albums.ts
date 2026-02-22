@@ -19,6 +19,22 @@ export const useAlbumStore = defineStore('album', () => {
     const isLoading = ref(false)
     const currentAlbum = ref<Album | null>(null)
 
+    function encodeAlbumIdForApi(id: string): string {
+        return id
+            .split('/')
+            .map(part => encodeURIComponent(part))
+            .join('/')
+    }
+
+    function decodeAlbumSlug(slug: string): string {
+        try {
+            return decodeURIComponent(slug)
+        } catch {
+            // 兼容旧版 slug（将 '-' 作为路径分隔）
+            return slug.replace(/-/g, '/')
+        }
+    }
+
     async function fetchAlbums(parentId?: string) {
         isLoading.value = true
         try {
@@ -56,7 +72,7 @@ export const useAlbumStore = defineStore('album', () => {
 
     async function deleteAlbum(id: string) {
         try {
-            await api.delete(`/albums/${id}`)
+            await api.delete(`/albums/${encodeAlbumIdForApi(id)}`)
             toast.success('相册已删除')
             // Refresh logic needed, for now just fetch root
             await fetchAlbums()
@@ -68,7 +84,7 @@ export const useAlbumStore = defineStore('album', () => {
 
     async function updateAlbum(id: string, updates: Partial<Album>) {
         try {
-            await api.patch(`/albums/${id}`, updates)
+            await api.patch(`/albums/${encodeAlbumIdForApi(id)}`, updates)
             toast.success('更新成功')
             // Update local state if current album is matched
             if (currentAlbum.value && currentAlbum.value.id === id) {
@@ -88,7 +104,17 @@ export const useAlbumStore = defineStore('album', () => {
     }
 
     async function getAlbumBySlug(slug: string): Promise<Album | null> {
-        // First get the basic info from list to resolve slug to ID
+        const decodedId = decodeAlbumSlug(slug)
+        try {
+            const detailRes = await api.get(`/albums/${encodeAlbumIdForApi(decodedId)}`)
+            const detail = detailRes.data.data
+            currentAlbum.value = detail
+            return detail
+        } catch {
+            // 兼容旧版：如果直接按ID查失败，回退到 flat 列表按 slug 查找
+        }
+
+        // Fallback: resolve by slug from flattened list
         try {
             const res = await api.get('/albums', { params: { flat: true } })
             const data = res.data.data || res.data
@@ -98,7 +124,7 @@ export const useAlbumStore = defineStore('album', () => {
             if (found) {
                 // Now fetch fresh detail with fileCount
                 try {
-                    const detailRes = await api.get(`/albums/${found.id}`)
+                    const detailRes = await api.get(`/albums/${encodeAlbumIdForApi(found.id)}`)
                     const detail = detailRes.data.data
                     currentAlbum.value = detail
                     return detail

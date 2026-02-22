@@ -11,9 +11,10 @@ services:
   cloudimgs:
     build: .
     ports:
-      - "3001:3001"
+      - "3003:3003"
     volumes:
       - ./uploads:/app/uploads:rw
+      - ./data:/app/data:rw
       - ./logs:/app/logs:rw
     restart: unless-stopped
     container_name: cloudimgs-app
@@ -21,8 +22,9 @@ services:
       - PUID=1000
       - PGID=1000
       - NODE_ENV=production
-      - PORT=3001
+      - PORT=3003
       - STORAGE_PATH=/app/uploads
+      - DATABASE_URL=/app/data/cloudimgs.db
 ```
 
 2. 启动服务：
@@ -31,7 +33,7 @@ services:
 docker compose up -d --build
 ```
 
-3. 访问 `http://localhost:3001`
+3. 访问 `http://localhost:3003`
 
 ### 方式二：克隆后构建（等同方式一）
 
@@ -72,8 +74,9 @@ uploads/
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | 3001 | 服务端口 |
+| `PORT` | 3003 | 服务端口 |
 | `STORAGE_PATH` | /app/uploads | 存储路径 |
+| `DATABASE_URL` | /app/data/cloudimgs.db | SQLite 数据库路径 |
 | `PASSWORD` | - | 访问密码（可选） |
 | `PUID` | 1000 | 运行用户 ID |
 | `PGID` | 1000 | 运行用户组 ID |
@@ -162,7 +165,7 @@ sudo chown -R 1000:1000 uploads/
 
 ```yaml
 ports:
-  - "8080:3001"  # 改为 8080 端口
+  - "8080:3003"  # 改为 8080 端口
 ```
 
 ### 查看容器日志

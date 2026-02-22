@@ -4,7 +4,7 @@ import { type ImageItem } from '@/stores/gallery' // Fixed import path
 import { Dialog, DialogContent, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { X, Download, Info, Tag, Trash2, Plus, ChevronLeft, ChevronRight, Pencil, Check } from 'lucide-vue-next'
+import { X, Download, Info, Tag, Trash2, Plus, ChevronLeft, ChevronRight, Pencil, Check, Link2, Wand2 } from 'lucide-vue-next'
 import api from '@/services/api'
 import { toast } from 'vue-sonner'
 
@@ -30,6 +30,9 @@ const confirmDelete = ref(false)
 const isEditingName = ref(false)
 const editingName = ref('')
 const isRenaming = ref(false)
+const annotateHint = ref('')
+const annotateLogs = ref<string[]>([])
+const isAnnotating = ref(false)
 
 // Reset confirm state when image changes or modal closes
 watch(() => props.image, () => {
@@ -151,6 +154,13 @@ const formattedSize = computed(() => {
     return mb < 1 ? `${(props.image.size / 1024).toFixed(1)} KB` : `${mb.toFixed(1)} MB`
 })
 
+const aliasList = computed(() => {
+    if (!props.image || !Array.isArray(props.image.aliases)) return []
+    return props.image.aliases
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+})
+
 async function handleDelete() {
     if (!props.image) return
     
@@ -182,6 +192,133 @@ async function handleDelete() {
     }
 }
 
+function encodeAlbumIdForApi(id: string): string {
+    return id
+        .split('/')
+        .map((part) => encodeURIComponent(part))
+        .join('/')
+}
+
+function pushAnnotateLog(message: string, timestamp?: number) {
+    const ts = new Date(timestamp || Date.now()).toLocaleTimeString('zh-CN', { hour12: false })
+    annotateLogs.value.push(`[${ts}] ${message}`)
+    if (annotateLogs.value.length > 8) {
+        annotateLogs.value.splice(0, annotateLogs.value.length - 8)
+    }
+}
+
+async function refreshCurrentImage() {
+    if (!props.image) return
+    try {
+        const res = await api.get(`/files/${props.image.id}`)
+        const data = res.data?.data
+        if (data) {
+            Object.assign(props.image, data)
+        }
+    } catch (e) {
+        console.error('Failed to refresh image after annotation:', e)
+    }
+}
+
+async function handleAnnotateImage() {
+    if (!props.image) return
+    if (!props.image.albumId) {
+        toast.error('当前图片不在相册内，无法使用相册标注接口')
+        return
+    }
+    if (isAnnotating.value) return
+
+    isAnnotating.value = true
+    annotateLogs.value = []
+    pushAnnotateLog('开始单图标注...')
+
+    const token = sessionStorage.getItem('auth_token') || localStorage.getItem('auth_token')
+    const params = new URLSearchParams({
+        overwrite: 'true',
+        concurrency: '1',
+        fileId: props.image.id,
+    })
+    if (token) {
+        params.set('password', token)
+    }
+    const hints = annotateHint.value.trim()
+    if (hints) {
+        params.set('hints', hints)
+    }
+
+    const url = `/api/albums/${encodeAlbumIdForApi(props.image.albumId)}/annotate/stream?${params.toString()}`
+
+    try {
+        let doneData: any = null
+        await new Promise<void>((resolve, reject) => {
+            const es = new EventSource(url)
+
+            const parse = (text: string) => {
+                try {
+                    return JSON.parse(text)
+                } catch {
+                    return null
+                }
+            }
+
+            es.addEventListener('start', (evt: MessageEvent) => {
+                const data = parse(evt.data) as any
+                pushAnnotateLog(
+                    `任务启动：扫描 ${data?.scanned ?? data?.total ?? 0}，待处理 ${data?.total ?? 0}，跳过 ${data?.skipped ?? 0}`,
+                    Number(data?.timestamp || Date.now()),
+                )
+            })
+
+            es.addEventListener('progress', (evt: MessageEvent) => {
+                const data = parse(evt.data) as any
+                pushAnnotateLog(`处理中：${data?.filename || 'unknown'}`, Number(data?.timestamp || Date.now()))
+            })
+
+            es.addEventListener('item', (evt: MessageEvent) => {
+                const data = parse(evt.data) as any
+                if (data?.status === 'success') {
+                    pushAnnotateLog(`成功：${data?.filename || 'unknown'}`, Number(data?.timestamp || Date.now()))
+                } else {
+                    pushAnnotateLog(`失败：${data?.filename || 'unknown'} ${data?.error || ''}`, Number(data?.timestamp || Date.now()))
+                }
+            })
+
+            es.addEventListener('done', async (evt: MessageEvent) => {
+                const data = parse(evt.data) as any
+                doneData = data
+                const skipped = Number(data?.skipped || 0)
+                pushAnnotateLog(
+                    `完成：成功 ${data?.success ?? 0}，失败 ${data?.failed ?? 0}，跳过 ${skipped}`,
+                    Number(data?.timestamp || Date.now()),
+                )
+                es.close()
+                await refreshCurrentImage()
+                resolve()
+            })
+
+            es.onerror = () => {
+                es.close()
+                reject(new Error('标注流连接中断'))
+            }
+        })
+        const successCount = Number(doneData?.success || 0)
+        const skippedCount = Number(doneData?.skipped || 0)
+        if (successCount > 0) {
+            toast.success('图片标注完成')
+        } else if (skippedCount > 0) {
+            toast.info('已跳过：该图片已有标注')
+        } else {
+            toast.info('图片无新增标注')
+        }
+    } catch (e: any) {
+        console.error('Single image annotation failed:', e)
+        toast.error(`图片标注失败：${e?.message || 'unknown error'}`)
+        pushAnnotateLog(`任务异常：${e?.message || 'unknown error'}`)
+    } finally {
+        isAnnotating.value = false
+    }
+}
+
 function handleDownload() {
     if (!props.image) return
     const link = document.createElement('a')
@@ -190,6 +327,30 @@ function handleDownload() {
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
+}
+
+// 获取完整的图片链接
+const fullImageUrl = computed(() => {
+    if (!props.image) return ''
+    return window.location.origin + props.image.url
+})
+
+// 复制链接到剪贴板
+async function handleCopyLink() {
+    if (!props.image) return
+    try {
+        await navigator.clipboard.writeText(fullImageUrl.value)
+        toast.success('链接已复制到剪贴板')
+    } catch (err) {
+        // 降级方案
+        const input = document.createElement('input')
+        input.value = fullImageUrl.value
+        document.body.appendChild(input)
+        input.select()
+        document.execCommand('copy')
+        document.body.removeChild(input)
+        toast.success('链接已复制到剪贴板')
+    }
 }
 </script>
 
@@ -308,6 +469,49 @@ function handleDownload() {
                 <p class="text-sm">{{ new Date(image.createdAt).toLocaleString() }}</p>
             </div>
 
+            <div>
+                <label class="text-xs text-muted-foreground font-medium">标注简述</label>
+                <p class="text-sm leading-6">{{ image.caption || '暂无标注' }}</p>
+            </div>
+
+            <div>
+                <label class="text-xs text-muted-foreground font-medium">语义描述</label>
+                <p class="text-sm leading-6 whitespace-pre-wrap">{{ image.semanticDescription || '暂无语义描述' }}</p>
+            </div>
+
+            <div class="space-y-2">
+                 <label class="text-xs text-muted-foreground font-medium">检索短语 aliases</label>
+                 <div class="flex flex-wrap gap-2">
+                    <span
+                        v-for="alias in aliasList"
+                        :key="alias"
+                        class="px-2 py-0.5 bg-muted text-foreground rounded text-xs"
+                    >
+                        {{ alias }}
+                    </span>
+                    <span v-if="aliasList.length === 0" class="text-xs text-muted-foreground italic px-2">暂无 aliases</span>
+                 </div>
+            </div>
+
+            <div class="space-y-2">
+                <label class="text-xs text-muted-foreground font-medium">单图标注（可选注入关键词）</label>
+                <div class="flex gap-2">
+                    <Input
+                        v-model="annotateHint"
+                        class="h-8 text-xs"
+                        placeholder="例如：幸福, 摸头, 可爱"
+                        :disabled="isAnnotating"
+                    />
+                    <Button size="sm" variant="outline" class="h-8 px-3" :disabled="isAnnotating" @click="handleAnnotateImage">
+                        <Wand2 class="h-4 w-4 mr-1" />
+                        {{ isAnnotating ? '标注中' : '标注图片' }}
+                    </Button>
+                </div>
+                <div v-if="annotateLogs.length > 0" class="max-h-24 overflow-auto rounded-md border p-2 text-xs text-muted-foreground space-y-1">
+                    <div v-for="(line, idx) in annotateLogs" :key="`${idx}-${line}`">{{ line }}</div>
+                </div>
+            </div>
+
             <div class="space-y-2">
                  <label class="text-xs text-muted-foreground font-medium flex items-center gap-1">
                     <Tag class="h-3 w-3" /> 标签
@@ -340,10 +544,23 @@ function handleDownload() {
             </div>
         </div>
 
-        <div class="mt-auto pt-6 border-t flex flex-col gap-2">
-             <Button 
-                variant="destructive" 
-                class="w-full transition-all" 
+        <div class="mt-auto pt-6 border-t flex flex-col gap-3">
+             <!-- 操作按钮组 -->
+             <div class="grid grid-cols-2 gap-2">
+                <Button variant="outline" class="w-full" @click="handleDownload">
+                    <Download class="h-4 w-4 mr-2" />
+                    下载
+                </Button>
+                <Button variant="outline" class="w-full" @click="handleCopyLink">
+                    <Link2 class="h-4 w-4 mr-2" />
+                    复制链接
+                </Button>
+             </div>
+
+             <!-- 删除按钮 -->
+             <Button
+                variant="destructive"
+                class="w-full transition-all"
                 :class="{ 'animate-pulse': confirmDelete }"
                 @click="handleDelete"
                 :disabled="isDeleting"
@@ -352,7 +569,7 @@ function handleDownload() {
                 {{ confirmDelete ? '点击确认删除' : '删除图片' }}
              </Button>
              <p v-if="confirmDelete" class="text-xs text-center text-destructive animate-in fade-in">
-                ⚠️ 再次点击确认删除，3秒后自动取消
+                再次点击确认删除，3秒后自动取消
              </p>
         </div>
       </div>

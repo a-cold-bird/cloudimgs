@@ -20,7 +20,7 @@ export function getUploadConfig(additionalConfig = {}) {
 // Request interceptor for API calls
 api.interceptors.request.use(
     (config) => {
-        const token = localStorage.getItem('auth_token')
+        const token = sessionStorage.getItem('auth_token') || localStorage.getItem('auth_token')
         if (token) {
             config.headers['x-access-password'] = token
         }
@@ -39,6 +39,7 @@ api.interceptors.response.use(
     async (error) => {
         if (error.response && error.response.status === 401) {
             // Clear token and redirect to login if unauthorized
+            sessionStorage.removeItem('auth_token')
             localStorage.removeItem('auth_token')
             window.location.href = '/login'
         }

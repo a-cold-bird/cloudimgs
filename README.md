@@ -26,11 +26,12 @@ services:
     container_name: cloudimgs-app
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3003:3003"
     environment:
       - NODE_ENV=production
-      - PORT=3001
+      - PORT=3003
       - STORAGE_PATH=/app/uploads
+      - DATABASE_URL=/app/data/cloudimgs.db
       # 可选：启用访问密码
       # - PASSWORD=your_secure_password_here
       # 可选：NAS 权限映射
@@ -39,6 +40,7 @@ services:
       - UMASK=002
     volumes:
       - ./uploads:/app/uploads
+      - ./data:/app/data
       - ./logs:/app/logs
 ```
 
@@ -57,6 +59,7 @@ services:
 ## 数据持久化
 
 - 上传数据与缓存：挂载 `./uploads:/app/uploads`
+- 数据库：挂载 `./data:/app/data`
 - 日志：挂载 `./logs:/app/logs`（可选，但建议）
 
 ## 相关链接

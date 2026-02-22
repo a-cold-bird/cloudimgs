@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ImageItem } from '@/stores/gallery'
-import { ImageOff } from 'lucide-vue-next'
+import { ImageOff, Loader2, Wand2 } from 'lucide-vue-next'
 
 const props = defineProps<{
   image: ImageItem
   selected?: boolean
+  annotating?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'click', image: ImageItem): void
   (e: 'toggle', id: string): void
+  (e: 'annotate', image: ImageItem): void
 }>()
 
 const imgError = ref(false)
@@ -83,6 +85,18 @@ function handleImageLoad() {
             <div v-show="selected" class="w-2.5 h-1.5 border-l-2 border-b-2 border-white -rotate-45 mb-1 shadow-sm"></div>
          </div>
     </div>
+
+    <!-- Quick annotate action -->
+    <button
+      class="absolute top-3 right-3 z-20 h-7 px-2 rounded-md border border-white/30 bg-black/40 backdrop-blur text-white text-[11px] font-medium opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1"
+      @click.stop="emit('annotate', image)"
+      :disabled="annotating"
+      title="单图标注"
+    >
+      <Loader2 v-if="annotating" class="h-3.5 w-3.5 animate-spin" />
+      <Wand2 v-else class="h-3.5 w-3.5" />
+      {{ annotating ? '标注中' : '标注' }}
+    </button>
 
     <!-- Error Placeholder -->
     <div v-if="imgError && !imgLoaded" class="absolute inset-0 flex flex-col items-center justify-center bg-muted text-muted-foreground">

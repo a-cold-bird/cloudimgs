@@ -21,21 +21,51 @@ function slugify(name: string): string {
  * List all tags with file count
  */
 tagsRouter.get('/', async (c) => {
-    const allTags = await db.select().from(tags);
+    let allTags = await db.select().from(tags);
     const allFiles = await db.select({ id: files.id, tags: files.tags }).from(files);
 
-    // Count files per tag
+    // Count files per tag and keep a display name for auto-created tags
     const tagCounts: Record<string, number> = {};
+    const tagDisplayNameBySlug: Record<string, string> = {};
+
     for (const file of allFiles) {
         const fileTags = (file.tags as string[]) || [];
-        // Ensure it is an array
-        if (Array.isArray(fileTags)) {
-            for (const tagName of fileTags) {
-                // We must convert tag name to slug to match the key used in response
-                const s = slugify(tagName);
-                tagCounts[s] = (tagCounts[s] || 0) + 1;
+        if (!Array.isArray(fileTags)) continue;
+
+        for (const rawTagName of fileTags) {
+            const tagName = String(rawTagName || '').trim();
+            if (!tagName) continue;
+
+            const s = slugify(tagName);
+            if (!s) continue;
+
+            tagCounts[s] = (tagCounts[s] || 0) + 1;
+            if (!tagDisplayNameBySlug[s]) {
+                tagDisplayNameBySlug[s] = tagName;
             }
         }
+    }
+
+    // Auto-sync missing tags from file metadata to tags table
+    const existingSlugs = new Set(allTags.map((tag) => tag.slug));
+    const missingSlugs = Object.keys(tagCounts).filter((slug) => !existingSlugs.has(slug));
+
+    for (const missingSlug of missingSlugs) {
+        try {
+            await db.insert(tags).values({
+                id: uuidv4(),
+                slug: missingSlug,
+                name: tagDisplayNameBySlug[missingSlug] || missingSlug,
+                color: '#6366f1',
+            });
+        } catch (e) {
+            // Ignore conflict/race and continue
+            console.error('Auto-sync tag failed', e);
+        }
+    }
+
+    if (missingSlugs.length > 0) {
+        allTags = await db.select().from(tags);
     }
 
     return c.json({

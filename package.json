@@ -2,10 +2,10 @@
   "name": "cloudimgs",
   "version": "1.2.3",
   "description": "A modern image hosting application with Vue frontend and Node.js backend",
-  "main": "server/index.js",
+  "main": "packages/server/src/index.ts",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "nodemon server/index.js",
+    "start": "cd packages/server && npm run start",
+    "dev": "cd packages/server && npm run dev",
     "build": "cd client-vue && npm run build",
     "install-client": "cd client-vue && npm install",
     "build-client": "cd client-vue && npm run build",

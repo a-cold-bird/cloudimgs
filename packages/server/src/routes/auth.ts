@@ -36,4 +36,12 @@ auth.post('/verify', async (c) => {
     return c.json({ success: false, error: '密码错误' }, 401);
 });
 
+/**
+ * POST /api/auth/logout
+ * Logout (stateless token mode, client-side token should be cleared)
+ */
+auth.post('/logout', (c) => {
+    return c.json({ success: true });
+});
+
 export { auth };

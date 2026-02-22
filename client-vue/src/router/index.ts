@@ -11,6 +11,12 @@ const router = createRouter({
             component: () => import('@/views/PublicHomeView.vue'),
             meta: { requiresAuth: false }
         },
+        {
+            path: '/share',
+            name: 'public-share',
+            component: () => import('@/views/ShareAccessView.vue'),
+            meta: { requiresAuth: false }
+        },
 
         // ==================== 管理后台 ====================
         {

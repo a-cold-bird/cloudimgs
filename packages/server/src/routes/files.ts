@@ -137,6 +137,13 @@ filesRouter.post('/upload', async (c) => {
         return c.json({ success: false, error: '没有选择文件' }, 400);
     }
 
+    if (albumId) {
+        const album = await db.select({ id: albums.id }).from(albums).where(eq(albums.id, albumId)).get();
+        if (!album) {
+            return c.json({ success: false, error: '目标相册不存在' }, 400);
+        }
+    }
+
     // Validate MIME type
     if (!config.upload.allowedMimeTypes.includes(file.type)) {
         return c.json({ success: false, error: '不支持的文件格式' }, 400);
@@ -211,6 +218,13 @@ filesRouter.post('/upload-base64', async (c) => {
 
     if (!body.base64Image) {
         return c.json({ success: false, error: '缺少 base64Image 参数' }, 400);
+    }
+
+    if (body.albumId) {
+        const album = await db.select({ id: albums.id }).from(albums).where(eq(albums.id, body.albumId)).get();
+        if (!album) {
+            return c.json({ success: false, error: '目标相册不存在' }, 400);
+        }
     }
 
     // Parse base64 data
@@ -318,6 +332,13 @@ filesRouter.patch('/:id', async (c) => {
         return c.json({ success: false, error: 'File not found' }, 404);
     }
 
+    if (body.albumId) {
+        const album = await db.select({ id: albums.id }).from(albums).where(eq(albums.id, body.albumId)).get();
+        if (!album) {
+            return c.json({ success: false, error: '目标相册不存在' }, 400);
+        }
+    }
+
     const updates: Partial<typeof file> = {
         updatedAt: new Date().toISOString(),
     };
@@ -343,6 +364,13 @@ filesRouter.post('/batch/move', async (c) => {
 
     if (!body.fileIds || body.fileIds.length === 0) {
         return c.json({ success: false, error: '没有选择文件' }, 400);
+    }
+
+    if (body.albumId) {
+        const album = await db.select({ id: albums.id }).from(albums).where(eq(albums.id, body.albumId)).get();
+        if (!album) {
+            return c.json({ success: false, error: '目标相册不存在' }, 400);
+        }
     }
 
     for (const fileId of body.fileIds) {

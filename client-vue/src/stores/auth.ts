@@ -8,6 +8,21 @@ export const useAuthStore = defineStore('auth', () => {
     const isInitialized = ref(false)
     const requiresPassword = ref(true) // 默认需要密码
 
+    function getStoredToken(): string | null {
+        return sessionStorage.getItem('auth_token') || localStorage.getItem('auth_token')
+    }
+
+    function saveToken(token: string) {
+        sessionStorage.setItem('auth_token', token)
+        // 兼容迁移：清理旧的持久化明文 token
+        localStorage.removeItem('auth_token')
+    }
+
+    function clearToken() {
+        sessionStorage.removeItem('auth_token')
+        localStorage.removeItem('auth_token')
+    }
+
     // 初始化时检查后端认证状态
     async function initialize() {
         if (isInitialized.value) return
@@ -25,12 +40,12 @@ export const useAuthStore = defineStore('auth', () => {
             }
 
             // 3. 需要密码时，验证存储的 token
-            const storedToken = localStorage.getItem('auth_token')
+            const storedToken = getStoredToken()
             if (storedToken) {
                 const valid = await verifyToken(storedToken)
                 isAuthenticated.value = valid
                 if (!valid) {
-                    localStorage.removeItem('auth_token')
+                    clearToken()
                 }
             }
         } catch (error) {
@@ -64,7 +79,7 @@ export const useAuthStore = defineStore('auth', () => {
             // 验证密码
             const res = await api.post('/auth/verify', { password })
             if (res.data.success) {
-                localStorage.setItem('auth_token', password)
+                saveToken(password)
                 isAuthenticated.value = true
                 return true
             }
@@ -78,7 +93,10 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     function logout() {
-        localStorage.removeItem('auth_token')
+        api.post('/auth/logout').catch(() => {
+            // ignore network errors during logout cleanup
+        })
+        clearToken()
         isAuthenticated.value = false
         isInitialized.value = false // 重置初始化状态，下次访问需要重新检查
         window.location.href = '/' // 跳转到公开首页

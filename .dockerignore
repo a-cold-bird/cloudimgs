@@ -48,6 +48,11 @@ logs
 
 # Uploads (will be created at runtime)
 uploads
+packages/server/uploads
+packages/server/data
+data
+torch-performance-test-data
+prompt.txt
 
 # Docker
 Dockerfile*

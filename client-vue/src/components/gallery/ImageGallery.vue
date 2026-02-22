@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch, onUnmounted } from 'vue'
 import { useGalleryStore } from '@/stores/gallery'
+import type { ImageItem } from '@/stores/gallery'
 import { useUploadStore } from '@/stores/upload'
 import ImageCard from './ImageCard.vue'
 import ImageList from './ImageList.vue'
@@ -223,6 +224,7 @@ watch(() => uploadStore.isUploading, (newVal, oldVal) => {
 
 // Bulk Selection - 使用 reactive Set 确保响应式更新
 const selectedIds = ref<Set<string>>(new Set())
+const annotatingIds = ref<Set<string>>(new Set())
 // 强制触发响应式更新的辅助函数
 function triggerSelectedIdsUpdate() {
     selectedIds.value = new Set(selectedIds.value)
@@ -315,6 +317,113 @@ function onImageDeleted(id: string) {
     const idx = store.images.findIndex(i => i.id === id)
     if (idx !== -1) {
         store.images.splice(idx, 1)
+    }
+}
+
+function encodeAlbumIdForApi(id: string): string {
+    return id
+        .split('/')
+        .map((part) => encodeURIComponent(part))
+        .join('/')
+}
+
+function setAnnotating(imageId: string, annotating: boolean) {
+    const next = new Set(annotatingIds.value)
+    if (annotating) {
+        next.add(imageId)
+    } else {
+        next.delete(imageId)
+    }
+    annotatingIds.value = next
+}
+
+function parseSsePayload(raw: string): any | null {
+    try {
+        return JSON.parse(raw)
+    } catch {
+        return null
+    }
+}
+
+async function annotateSingleImage(image: ImageItem) {
+    if (annotatingIds.value.has(image.id)) return
+
+    const targetAlbumId = image.albumId || props.albumId
+    if (!targetAlbumId) {
+        toast.error('当前图片不在相册内，无法标注')
+        return
+    }
+
+    setAnnotating(image.id, true)
+    const params = new URLSearchParams({
+        overwrite: 'true',
+        concurrency: '1',
+        fileId: image.id,
+    })
+    const token = sessionStorage.getItem('auth_token') || localStorage.getItem('auth_token')
+    if (token) {
+        params.set('password', token)
+    }
+
+    const url = `/api/albums/${encodeAlbumIdForApi(targetAlbumId)}/annotate/stream?${params.toString()}`
+
+    try {
+        let donePayload: any = null
+        await new Promise<void>((resolve, reject) => {
+            const es = new EventSource(url)
+            let settled = false
+
+            es.addEventListener('item', (evt: MessageEvent) => {
+                const data = parseSsePayload(evt.data) as any
+                if (data?.status === 'failed') {
+                    toast.error(`标注失败：${data?.filename || image.originalName}`)
+                }
+            })
+
+            es.addEventListener('done', (evt: MessageEvent) => {
+                if (settled) return
+                settled = true
+                const data = parseSsePayload(evt.data) as any
+                donePayload = data
+                es.close()
+
+                const failed = Number(data?.failed || 0)
+                if (failed > 0) {
+                    reject(new Error('标注任务失败'))
+                    return
+                }
+                resolve()
+            })
+
+            es.onerror = () => {
+                if (settled) return
+                settled = true
+                es.close()
+                reject(new Error('标注流连接中断'))
+            }
+        })
+
+        await store.fetchImages(true, props.albumId)
+        if (selectedImage.value?.id === image.id) {
+            const refreshed = store.images.find((item) => item.id === image.id)
+            if (refreshed) {
+                selectedImage.value = refreshed
+            }
+        }
+        const successCount = Number(donePayload?.success || 0)
+        const skippedCount = Number(donePayload?.skipped || 0)
+        if (successCount > 0) {
+            toast.success(`已完成标注：${image.originalName}`)
+        } else if (skippedCount > 0) {
+            toast.info(`已跳过（已有标注）：${image.originalName}`)
+        } else {
+            toast.info(`未产生新标注：${image.originalName}`)
+        }
+    } catch (e: any) {
+        console.error('Failed to annotate image:', e)
+        toast.error(`单图标注失败：${e?.message || 'unknown error'}`)
+    } finally {
+        setAnnotating(image.id, false)
     }
 }
 
@@ -532,8 +641,10 @@ onUnmounted(() => {
         :key="image.id"
         :image="image"
         :selected="selectedIds.has(image.id)"
+        :annotating="annotatingIds.has(image.id)"
         @click="onImageClick(image)"
         @toggle="toggleSelect"
+        @annotate="annotateSingleImage"
         class="mb-4 inline-block w-full"
       />
     </div>
@@ -543,9 +654,11 @@ onUnmounted(() => {
         <ImageList
             :images="store.images"
             :selected-ids="selectedIds"
+            :annotating-ids="annotatingIds"
             @click="onImageClick"
             @toggle="toggleSelect"
             @toggle-all="handleToggleAll"
+            @annotate="annotateSingleImage"
         />
     </div>
 

@@ -14,6 +14,10 @@ export const files = sqliteTable('files', {
 
     // Tags (stored as JSON array for simplicity)
     tags: text('tags', { mode: 'json' }).$type<string[]>().default([]),
+    caption: text('caption'),
+    semanticDescription: text('semantic_description'),
+    aliases: text('aliases', { mode: 'json' }).$type<string[]>().default([]),
+    annotationUpdatedAt: text('annotation_updated_at'),
 
     // EXIF data (stored as JSON string)
     exifData: text('exif_data', { mode: 'json' }).$type<{

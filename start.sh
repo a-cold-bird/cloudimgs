@@ -15,17 +15,17 @@ if ! command -v npm &> /dev/null; then
 fi
 
 echo "📦 安装后端依赖..."
-npm install
+cd packages/server && npm install && cd ../..
 
 echo "📦 安装前端依赖..."
-cd client && npm install && cd ..
+cd client-vue && npm install && cd ..
 
 echo "🔨 构建前端..."
-cd client && npm run build && cd ..
+cd client-vue && npm run build && cd ..
 
 echo "🌐 启动服务器..."
 echo "✅ 应用已启动！"
-echo "📍 访问地址: http://localhost:3001"
+echo "📍 访问地址: http://localhost:3003"
 echo "🛑 按 Ctrl+C 停止服务"
 
-npm start 
+cd packages/server && npm run start

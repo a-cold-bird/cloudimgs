@@ -11,18 +11,20 @@ import {
     TableHeader,
     TableRow
 } from '@/components/ui/table'
-import { ImageIcon, MoreHorizontal } from 'lucide-vue-next'
+import { ImageIcon, Loader2, Wand2 } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 
 const props = defineProps<{
     images: ImageItem[]
     selectedIds: Set<string>
+    annotatingIds?: Set<string>
 }>()
 
 const emit = defineEmits<{
     (e: 'click', image: ImageItem): void
     (e: 'toggle', id: string): void
     (e: 'toggle-all', selected: boolean): void
+    (e: 'annotate', image: ImageItem): void
 }>()
 
 // 格式化文件大小
@@ -79,7 +81,7 @@ function handleToggleAll(checked: boolean) {
                     <TableHead class="w-[100px]">大小</TableHead>
                     <TableHead class="w-[200px]">上传时间</TableHead>
                     <TableHead class="w-[150px]">标签</TableHead>
-                    <TableHead class="w-[50px]"></TableHead>
+                    <TableHead class="w-[100px]">操作</TableHead>
                 </TableRow>
             </TableHeader>
             <TableBody>
@@ -141,8 +143,16 @@ function handleToggleAll(checked: boolean) {
                         </div>
                     </TableCell>
                     <TableCell>
-                        <Button variant="ghost" size="icon" class="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <MoreHorizontal class="h-4 w-4" />
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            class="h-8 px-2"
+                            :disabled="props.annotatingIds?.has(image.id)"
+                            @click.stop="emit('annotate', image)"
+                        >
+                            <Loader2 v-if="props.annotatingIds?.has(image.id)" class="h-3.5 w-3.5 animate-spin mr-1" />
+                            <Wand2 v-else class="h-3.5 w-3.5 mr-1" />
+                            标注
                         </Button>
                     </TableCell>
                 </TableRow>

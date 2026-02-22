@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database, { type Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema.js';
 import { existsSync, mkdirSync } from 'fs';
@@ -13,8 +13,29 @@ if (!existsSync(dbDir)) {
 }
 
 // Create SQLite connection
-const sqlite = new Database(DATABASE_PATH);
+const sqlite: BetterSqliteDatabase = new Database(DATABASE_PATH);
 sqlite.pragma('journal_mode = WAL'); // Better concurrent performance
+sqlite.pragma('foreign_keys = ON');
+
+function ensureFilesColumns() {
+    const columns = sqlite.prepare("PRAGMA table_info(files)").all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map((c) => c.name));
+
+    if (!columnNames.has('caption')) {
+        sqlite.exec("ALTER TABLE files ADD COLUMN caption text");
+    }
+    if (!columnNames.has('semantic_description')) {
+        sqlite.exec("ALTER TABLE files ADD COLUMN semantic_description text");
+    }
+    if (!columnNames.has('aliases')) {
+        sqlite.exec("ALTER TABLE files ADD COLUMN aliases text DEFAULT '[]'");
+    }
+    if (!columnNames.has('annotation_updated_at')) {
+        sqlite.exec("ALTER TABLE files ADD COLUMN annotation_updated_at text");
+    }
+}
+
+ensureFilesColumns();
 
 // Create Drizzle ORM instance
 export const db = drizzle(sqlite, { schema });

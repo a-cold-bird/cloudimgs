@@ -1,21 +1,25 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '@/services/api'
 
-// 分页配置常量
+// Pagination size
 const PAGE_SIZE = 50
 
 export interface ImageItem {
     id: string
     originalName: string
     filename?: string
-    relPath?: string // 文件相对路径，用于API调用
+    relPath?: string
     size: number
     mimeType: string
     width?: number
     height?: number
     thumbhash?: string
     tags: string[]
+    caption?: string | null
+    semanticDescription?: string | null
+    aliases?: string[]
+    annotationUpdatedAt?: string | null
     albumId?: string
     createdAt: string
     url: string
@@ -44,8 +48,8 @@ export const useGalleryStore = defineStore('gallery', () => {
                     page: page.value,
                     limit: PAGE_SIZE,
                     albumId,
-                    q: searchQuery.value || undefined
-                }
+                    q: searchQuery.value || undefined,
+                },
             })
 
             const items = Array.isArray(res.data) ? res.data : (res.data.data || res.data.files || [])

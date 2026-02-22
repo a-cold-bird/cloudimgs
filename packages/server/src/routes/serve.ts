@@ -1,5 +1,10 @@
 import { Hono } from 'hono';
 import type { StorageDriver } from '../drivers/interface.js';
+import { config } from '../config.js';
+import { db } from '../db/index.js';
+import { files } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+import { validateShareToken } from '../lib/shareStore.js';
 
 // Will be injected via middleware
 declare module 'hono' {
@@ -9,6 +14,44 @@ declare module 'hono' {
 }
 
 const serveRouter = new Hono();
+
+function getFirstQueryValue(value: string | string[] | undefined): string | undefined {
+    if (Array.isArray(value)) return value[0];
+    return value;
+}
+
+async function authorizeMediaAccess(c: any, key: string): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    if (!config.auth.enabled) return { ok: true };
+
+    const accessPassword = c.req.header('x-access-password') || getFirstQueryValue(c.req.query('password'));
+    if (accessPassword && accessPassword === config.auth.password) {
+        return { ok: true };
+    }
+
+    const shareToken = getFirstQueryValue(c.req.query('shareToken')) || getFirstQueryValue(c.req.query('token'));
+    if (!shareToken) {
+        return { ok: false, status: 401, error: '需要提供访问密码' };
+    }
+
+    const file = await db.select({ albumId: files.albumId }).from(files).where(eq(files.key, key)).get();
+    if (!file || !file.albumId) {
+        return { ok: false, status: 403, error: '分享令牌与资源不匹配' };
+    }
+
+    const validation = await validateShareToken(shareToken, {
+        albumId: file.albumId,
+        allowBurnedMedia: true,
+    });
+    if (!validation.ok) {
+        return {
+            ok: false,
+            status: validation.status || 403,
+            error: validation.error || '分享校验失败',
+        };
+    }
+
+    return { ok: true };
+}
 
 /**
  * GET /api/serve/:key
@@ -23,6 +66,11 @@ const serveRouter = new Hono();
 serveRouter.get('/:key{.+}', async (c) => {
     const key = c.req.param('key');
     const storage = c.get('storage');
+
+    const authz = await authorizeMediaAccess(c, key);
+    if (!authz.ok) {
+        return c.json({ error: authz.error }, authz.status);
+    }
 
     // Check if file exists
     if (!(await storage.exists(key))) {
