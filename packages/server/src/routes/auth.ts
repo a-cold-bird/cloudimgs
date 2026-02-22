@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { config } from '../config.js';
+import { clearPasswordAuthCookie, setPasswordAuthCookie } from '../lib/authCookie.js';
 
 const auth = new Hono();
 
@@ -30,6 +31,7 @@ auth.post('/verify', async (c) => {
     }
 
     if (password === config.auth.password) {
+        setPasswordAuthCookie(c);
         return c.json({ success: true });
     }
 
@@ -41,6 +43,7 @@ auth.post('/verify', async (c) => {
  * Logout (stateless token mode, client-side token should be cleared)
  */
 auth.post('/logout', (c) => {
+    clearPasswordAuthCookie(c);
     return c.json({ success: true });
 });
 

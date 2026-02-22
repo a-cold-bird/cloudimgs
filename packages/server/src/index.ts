@@ -1,7 +1,8 @@
-// Load environment variables from root .env file
+﻿// Load environment variables from root .env file
 import { config as dotenvConfig } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -11,13 +12,13 @@ dotenvConfig({ path: resolve(__dirname, '../../../.env') });
 
 // Global error handlers to prevent process crashes
 process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err.message);
+    console.error('鉂?Uncaught Exception:', err.message);
     console.error(err.stack);
     // Don't exit - try to keep the server running
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise);
+    console.error('鉂?Unhandled Rejection at:', promise);
     console.error('Reason:', reason);
     // Don't exit - try to keep the server running
 });
@@ -32,17 +33,19 @@ async function startServer() {
     await import('./db/index.js');
 
     console.log(`
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║   ☁️  CloudImgs v2.0                                  ║
-║   Modern Image Hosting with SQLite                   ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
+鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+鈺?                                                      鈺?
+鈺?  鈽侊笍  CloudImgs v2.0                                  鈺?
+鈺?  Modern Image Hosting with SQLite                   鈺?
+鈺?                                                      鈺?
+鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
     `);
 
-    console.log(`📍 Starting server on http://${config.host}:${config.port}`);
-    console.log(`📂 Storage path: ${config.storage.basePath}`);
-    console.log(`🔒 Password protection: ${config.auth.enabled ? 'Enabled' : 'Disabled'}`);
+    console.log(`馃搷 Starting server on http://${config.host}:${config.port}`);
+    console.log(`📁 Database path: ${config.databaseUrl}`);
+    console.log(`📁 Database exists: ${existsSync(config.databaseUrl) ? 'Yes' : 'No (will create if needed)'}`);
+    console.log(`馃搨 Storage path: ${config.storage.basePath}`);
+    console.log(`馃敀 Password protection: ${config.auth.enabled ? 'Enabled' : 'Disabled'}`);
     console.log('');
 
     serve({
@@ -50,9 +53,9 @@ async function startServer() {
         port: config.port,
         hostname: config.host,
     }, (info) => {
-        console.log(`✅ Server running at http://${info.address}:${info.port}`);
+        console.log(`鉁?Server running at http://${info.address}:${info.port}`);
         console.log('');
-        console.log('📚 API Endpoints:');
+        console.log('馃摎 API Endpoints:');
         console.log('   GET  /api/health          - Health check');
         console.log('   GET  /api/auth/status     - Check auth status');
         console.log('   POST /api/auth/verify     - Verify password');
@@ -67,3 +70,4 @@ async function startServer() {
 }
 
 startServer();
+

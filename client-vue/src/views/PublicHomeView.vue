@@ -31,7 +31,7 @@ const isLoading = ref(true)
 const baseUrl = ref('')
 const copiedUrl = ref<string | null>(null)
 
-const QUERY_SAMPLE = '好幸福'
+const QUERY_SAMPLE = '伤心'
 
 function normalizeBaseUrl(serverBaseUrl?: string): string {
   const origin = window.location.origin

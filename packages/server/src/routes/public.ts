@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { files, albums, tags } from '../db/schema.js';
 import type { StorageDriver } from '../drivers/interface.js';
@@ -102,28 +102,25 @@ publicRouter.get('/albums/:slug/files', async (c) => {
         return c.json({ success: false, error: '相册不存在或不公开' }, 404);
     }
 
-    // Build query
-    let query = db
+    const allFiles = await db
         .select()
         .from(files)
-        .where(eq(files.albumId, album.id))
-        .limit(limit)
-        .offset(offset);
-
-    const results = await query;
+        .where(eq(files.albumId, album.id));
 
     // Filter by tag if specified (done in JS since SQLite JSON query is limited)
-    let filteredResults = results;
+    let filteredResults = allFiles;
     if (tag) {
-        filteredResults = results.filter((file) => {
+        filteredResults = allFiles.filter((file) => {
             const fileTags = file.tags as string[] || [];
             return fileTags.includes(tag);
         });
     }
 
+    const paginatedResults = filteredResults.slice(offset, offset + limit);
+
     return c.json({
         success: true,
-        data: filteredResults.map((file) => ({
+        data: paginatedResults.map((file) => ({
             id: file.id,
             originalName: file.originalName,
             width: file.width,
@@ -132,7 +129,12 @@ publicRouter.get('/albums/:slug/files', async (c) => {
             tags: file.tags,
             url: storage.getUrl(file.key),
         })),
-        pagination: { page, limit },
+        pagination: {
+            page,
+            limit,
+            total: filteredResults.length,
+            totalPages: Math.ceil(filteredResults.length / limit),
+        },
     });
 });
 
@@ -193,7 +195,55 @@ publicRouter.get('/albums/:slug/random', async (c) => {
  * List all tags (no auth required)
  */
 publicRouter.get('/tags', async (c) => {
-    const results = await db.select().from(tags);
+    const publicAlbumRows = await db
+        .select({ id: albums.id })
+        .from(albums)
+        .where(eq(albums.isPublic, true));
+
+    if (publicAlbumRows.length === 0) {
+        return c.json({
+            success: true,
+            data: [],
+        });
+    }
+
+    const publicAlbumIds = publicAlbumRows.map((row) => row.id);
+    const publicFiles = await db
+        .select({ tags: files.tags })
+        .from(files)
+        .where(inArray(files.albumId, publicAlbumIds));
+
+    const existingTags = await db.select().from(tags);
+    const existingByName = new Map(
+        existingTags.map((item) => [item.name.trim().toLowerCase(), item]),
+    );
+
+    const tagCounter = new Map<string, { name: string; fileCount: number }>();
+    for (const row of publicFiles) {
+        const fileTags = Array.isArray(row.tags) ? row.tags : [];
+        for (const rawTag of fileTags) {
+            const name = String(rawTag || '').trim();
+            if (!name) continue;
+            const key = name.toLowerCase();
+            const current = tagCounter.get(key);
+            if (current) {
+                current.fileCount += 1;
+            } else {
+                tagCounter.set(key, { name, fileCount: 1 });
+            }
+        }
+    }
+
+    const results = Array.from(tagCounter.entries()).map(([key, value]) => {
+        const existing = existingByName.get(key);
+        return {
+            id: existing?.id || `public-${key}`,
+            name: existing?.name || value.name,
+            slug: existing?.slug || key.replace(/\s+/g, '-'),
+            color: existing?.color || '#6366f1',
+            fileCount: value.fileCount,
+        };
+    }).sort((a, b) => b.fileCount - a.fileCount || a.name.localeCompare(b.name, 'zh-Hans-CN'));
 
     return c.json({
         success: true,

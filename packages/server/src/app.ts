@@ -20,6 +20,7 @@ import { config } from './config.js';
 import { createStorageDriver } from './drivers/index.js';
 import type { StorageDriver } from './drivers/interface.js';
 import { getRateLimitStats, rateLimit } from './middleware/rateLimit.js';
+import { hasValidPasswordAccess } from './lib/authCookie.js';
 
 // Create Hono app
 const app = new Hono();
@@ -65,13 +66,7 @@ app.use('*', async (c, next) => {
 
 // Password protection middleware (for protected routes)
 const requireAuth = async (c: any, next: any) => {
-    if (!config.auth.enabled) {
-        return next();
-    }
-
-    const password = c.req.header('x-access-password') || c.req.query('password');
-
-    if (!password || password !== config.auth.password) {
+    if (!hasValidPasswordAccess(c)) {
         return c.json({ error: '需要提供有效的访问密码' }, 401);
     }
 

@@ -13,5 +13,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3003
+      - STORAGE_PATH=/app/uploads
+      - DATABASE_URL=/app/data/cloudimgs.db
       # 密码保护（可选）
       # - PASSWORD=your_password
