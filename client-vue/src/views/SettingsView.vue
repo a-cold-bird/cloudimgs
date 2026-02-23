@@ -31,6 +31,7 @@ interface AppSettingsPayload {
     ruleSearchEnabled?: boolean
     semanticSearchEnabled?: boolean
     semanticSearchLocked?: boolean
+    minScoreThreshold?: number
   }
 }
 
@@ -63,6 +64,7 @@ const promptPresetOptions = ref<AnnotationPromptPresetOption[]>([])
 const ruleSearchEnabled = ref(true)
 const semanticSearchEnabled = ref(false)
 const semanticSearchLocked = ref(true)
+const retrievalMinScoreThreshold = ref(10)
 
 const mergedModelOptions = computed(() => {
   const set = new Set<string>()
@@ -128,6 +130,11 @@ function clampConcurrency(value: number): number {
   return Math.min(10, Math.max(1, Math.round(value)))
 }
 
+function clampMinScoreThreshold(value: number): number {
+  if (!Number.isFinite(value)) return 10
+  return Math.min(100, Math.max(1, Math.round(value)))
+}
+
 function normalizeModelOptions(models: unknown): string[] {
   if (!Array.isArray(models)) return []
   const set = new Set<string>()
@@ -177,6 +184,7 @@ function applySettings(data?: AppSettingsPayload) {
   ruleSearchEnabled.value = data?.retrieval?.ruleSearchEnabled !== false
   semanticSearchEnabled.value = data?.retrieval?.semanticSearchEnabled === true
   semanticSearchLocked.value = data?.retrieval?.semanticSearchLocked !== false
+  retrievalMinScoreThreshold.value = clampMinScoreThreshold(Number(data?.retrieval?.minScoreThreshold ?? 10))
 }
 
 async function loadSettings() {
@@ -276,6 +284,7 @@ async function saveSettings() {
       retrieval: {
         ruleSearchEnabled: ruleSearchEnabled.value,
         semanticSearchEnabled: semanticSearchEnabled.value,
+        minScoreThreshold: clampMinScoreThreshold(retrievalMinScoreThreshold.value),
       },
     })
 
@@ -488,6 +497,20 @@ onMounted(async () => {
               </p>
             </div>
             <Switch v-model="ruleSearchEnabled" :disabled="settingsLoading || settingsSaving" />
+          </div>
+
+          <div class="rounded-md border p-3 space-y-2">
+            <p class="text-sm font-medium">检索分数阈值</p>
+            <p class="text-xs text-muted-foreground">
+              当 `q` 检索命中分数 ≥ 阈值时，将在候选中随机返回一张；低于阈值时回退随机图。
+            </p>
+            <Input
+              v-model.number="retrievalMinScoreThreshold"
+              type="number"
+              min="1"
+              max="100"
+              :disabled="settingsLoading || settingsSaving"
+            />
           </div>
 
           <div class="flex items-center justify-between rounded-md border p-3">

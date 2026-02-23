@@ -19,6 +19,7 @@ export interface AnnotationConfig {
 export interface RetrievalConfig {
     ruleSearchEnabled: boolean;
     semanticSearchEnabled: boolean;
+    minScoreThreshold: number;
 }
 
 export interface AppSettings {
@@ -41,6 +42,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     retrieval: {
         ruleSearchEnabled: true,
         semanticSearchEnabled: false,
+        minScoreThreshold: 10,
     },
 };
 
@@ -51,6 +53,12 @@ function clampConcurrency(value: unknown): number {
     const n = Number.parseInt(String(value ?? ''), 10);
     if (!Number.isFinite(n)) return DEFAULT_SETTINGS.annotation.concurrency;
     return Math.min(10, Math.max(1, n));
+}
+
+function clampMinScoreThreshold(value: unknown): number {
+    const n = Number.parseFloat(String(value ?? ''));
+    if (!Number.isFinite(n)) return DEFAULT_SETTINGS.retrieval.minScoreThreshold;
+    return Math.min(100, Math.max(1, n));
 }
 
 function sanitizeSettings(input: Partial<AppSettings> | undefined): AppSettings {
@@ -77,6 +85,9 @@ function sanitizeSettings(input: Partial<AppSettings> | undefined): AppSettings 
             ),
             // Semantic retrieval remains locked for now.
             semanticSearchEnabled: false,
+            minScoreThreshold: clampMinScoreThreshold(
+                input?.retrieval?.minScoreThreshold ?? DEFAULT_SETTINGS.retrieval.minScoreThreshold,
+            ),
         },
     };
 }

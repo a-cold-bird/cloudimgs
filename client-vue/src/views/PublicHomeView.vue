@@ -126,13 +126,28 @@ async function fetchEndpoints() {
   }
 }
 
-function copyUrl(url: string) {
-  navigator.clipboard.writeText(url)
-  copiedUrl.value = url
-  toast.success('已复制')
-  setTimeout(() => {
-    copiedUrl.value = null
-  }, 2000)
+async function copyUrl(url: string) {
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url)
+    } else {
+      const input = document.createElement('input')
+      input.value = url
+      document.body.appendChild(input)
+      input.select()
+      document.execCommand('copy')
+      document.body.removeChild(input)
+    }
+
+    copiedUrl.value = url
+    toast.success('已复制')
+    setTimeout(() => {
+      copiedUrl.value = null
+    }, 2000)
+  } catch (error) {
+    console.error('Failed to copy url:', error)
+    toast.error('复制失败，请手动复制链接')
+  }
 }
 
 function goToAdmin() {

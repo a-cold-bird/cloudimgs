@@ -24,9 +24,6 @@ declare module 'hono' {
 }
 
 const imageApiRouter = new Hono();
-const SEARCH_MIN_SCORE = Number.isFinite(Number.parseFloat(process.env.I_SEARCH_MIN_SCORE || ''))
-    ? Number.parseFloat(process.env.I_SEARCH_MIN_SCORE || '')
-    : 6;
 const SEARCH_MAX_CANDIDATES = 200;
 
 const SYNONYM_GROUPS = [
@@ -171,6 +168,12 @@ function rankFilesByQuery(
     return ranked.slice(0, SEARCH_MAX_CANDIDATES);
 }
 
+function pickRandomItem<T>(items: T[]): T | null {
+    if (!items.length) return null;
+    const randomIndex = Math.floor(Math.random() * items.length);
+    return items[randomIndex] ?? null;
+}
+
 // Apply rate limiting to all image API routes
 imageApiRouter.use('*', rateLimit());
 
@@ -224,6 +227,9 @@ imageApiRouter.get('/:slug', async (c) => {
     const limit = parseInt(c.req.query('limit') || '50');
     const appSettings = await getAppSettings();
     const allowRuleSearch = appSettings.retrieval.ruleSearchEnabled;
+    const minScoreThreshold = Number.isFinite(Number(appSettings.retrieval.minScoreThreshold))
+        ? Number(appSettings.retrieval.minScoreThreshold)
+        : 10;
 
     // Find album
     const album = await db
@@ -247,8 +253,9 @@ imageApiRouter.get('/:slug', async (c) => {
     }
 
     const ranked = query && allowRuleSearch ? rankFilesByQuery(albumFiles, query) : [];
-    const best = ranked[0];
-    const hasReliableBest = !!best && best.score >= SEARCH_MIN_SCORE;
+    const qualifiedRanked = ranked.filter((item) => item.score >= minScoreThreshold);
+    const selectedRanked = pickRandomItem(qualifiedRanked);
+    const hasQualifiedMatch = !!selectedRanked;
     const queryMatchedFiles = ranked.map((r) => r.file);
 
     // Return JSON list
@@ -268,6 +275,7 @@ imageApiRouter.get('/:slug', async (c) => {
                 },
                 query: query || undefined,
                 ruleSearchEnabled: allowRuleSearch,
+                minScoreThreshold,
                 images: paginatedFiles.map((file) => ({
                     id: file.id,
                     name: file.originalName,
@@ -291,9 +299,8 @@ imageApiRouter.get('/:slug', async (c) => {
     // Pick target file:
     // - 有 q 且命中阈值时优先返回最高分
     // - 否则回退随机
-    const randomIndex = Math.floor(Math.random() * albumFiles.length);
-    const randomFile = albumFiles[randomIndex];
-    const targetFile = hasReliableBest && best ? best.file : randomFile;
+    const randomFile = pickRandomItem(albumFiles) || albumFiles[0];
+    const targetFile = hasQualifiedMatch && selectedRanked ? selectedRanked.file : randomFile;
     const url = storage.getUrl(targetFile.key);
 
     // Return random as JSON (no redirect)
@@ -308,9 +315,11 @@ imageApiRouter.get('/:slug', async (c) => {
                 width: targetFile.width,
                 height: targetFile.height,
                 query: query || undefined,
-                score: hasReliableBest && best ? best.score : undefined,
-                matchedTerms: hasReliableBest && best ? best.matchedTerms : [],
-                fallbackRandom: query ? !hasReliableBest : false,
+                score: hasQualifiedMatch && selectedRanked ? selectedRanked.score : undefined,
+                matchedTerms: hasQualifiedMatch && selectedRanked ? selectedRanked.matchedTerms : [],
+                fallbackRandom: query ? !hasQualifiedMatch : false,
+                minScoreThreshold,
+                candidateCount: qualifiedRanked.length,
                 ruleSearchEnabled: allowRuleSearch,
             },
         });
@@ -331,6 +340,9 @@ imageApiRouter.get('/:slug/:filename', async (c) => {
     const wantJson = c.req.query('json') === 'true';
     const appSettings = await getAppSettings();
     const allowRuleSearch = appSettings.retrieval.ruleSearchEnabled;
+    const minScoreThreshold = Number.isFinite(Number(appSettings.retrieval.minScoreThreshold))
+        ? Number(appSettings.retrieval.minScoreThreshold)
+        : 10;
 
     // Find album
     const album = await db
@@ -372,23 +384,26 @@ imageApiRouter.get('/:slug/:filename', async (c) => {
                 .from(files)
                 .where(eq(files.albumId, album.id));
             const ranked = fallbackQuery && allowRuleSearch ? rankFilesByQuery(albumFiles, fallbackQuery) : [];
-            const best = ranked[0];
+            const qualifiedRanked = ranked.filter((item) => item.score >= minScoreThreshold);
+            const selectedRanked = pickRandomItem(qualifiedRanked);
 
-            if (best && best.score >= SEARCH_MIN_SCORE) {
-                const matchedUrl = storage.getUrl(best.file.key);
+            if (selectedRanked) {
+                const matchedUrl = storage.getUrl(selectedRanked.file.key);
                 if (wantJson) {
                     return c.json({
                         success: true,
                         data: {
-                            id: best.file.id,
-                            name: best.file.originalName,
+                            id: selectedRanked.file.id,
+                            name: selectedRanked.file.originalName,
                             url: matchedUrl,
-                            width: best.file.width,
-                            height: best.file.height,
+                            width: selectedRanked.file.width,
+                            height: selectedRanked.file.height,
                             semanticFallback: true,
                             query: fallbackQuery,
-                            score: best.score,
-                            matchedTerms: best.matchedTerms,
+                            score: selectedRanked.score,
+                            minScoreThreshold,
+                            candidateCount: qualifiedRanked.length,
+                            matchedTerms: selectedRanked.matchedTerms,
                         },
                     });
                 }

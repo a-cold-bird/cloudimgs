@@ -12,6 +12,7 @@
 - 管理界面：瀑布流、拖拽多图上传、批量圈选删除、多级目录、相册分享
 - 体验优化：ThumbHash 缩略图、移动端适配、多主题
 - 安全：可选访问密码（`PASSWORD`）
+- 检索策略：`/i/:slug?q=...` 默认阈值为 `10`，当命中分数达到阈值时会在候选中随机返回，降低重复感
 
 PicGo 插件：`https://github.com/qazzxxx/picgo-plugin-cloudimgs-uploader`
 
@@ -66,6 +67,14 @@ services:
 
 - 仓库：`https://github.com/a-cold-bird/cloudimgs`
 - Docker 部署文档：`DOCKER.md`
+
+## 检索阈值说明
+
+- 默认阈值：`10`
+- 可在后台 `设置 -> 检索策略` 中修改“检索分数阈值”
+- 行为：
+  - 当 `q` 检索结果中存在 `score >= 阈值` 的图片时：从这些候选里随机返回 1 张
+  - 当所有结果都低于阈值时：回退到相册随机图
 
 ## Star History
 

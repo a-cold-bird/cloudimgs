@@ -243,7 +243,17 @@ class RecoveryContext:
     public_albums: bool
     album_cache: Dict[str, str]
     slug_cache: Set[str]
+    album_ids: Set[str]
     created_albums: int = 0
+
+
+@dataclass
+class ExistingFileRow:
+    id: str
+    album_id: Optional[str]
+    original_name: str
+    size: int
+    mime_type: str
 
 
 def ensure_album_chain(ctx: RecoveryContext, album_path: str) -> Optional[str]:
@@ -287,6 +297,7 @@ def ensure_album_chain(ctx: RecoveryContext, album_path: str) -> Optional[str]:
             )
 
         ctx.album_cache[current] = album_id
+        ctx.album_ids.add(album_id)
         parent_id = album_id
         ctx.created_albums += 1
 
@@ -308,10 +319,69 @@ def decide_album_path(rel_key: str, mode: str) -> Optional[str]:
     raise ValueError(f"Unsupported mode: {mode}")
 
 
-def load_existing_state(conn: sqlite3.Connection) -> Tuple[Dict[str, str], Set[str], Set[str]]:
+def repair_existing_file(
+    ctx: RecoveryContext,
+    existing: ExistingFileRow,
+    full_path: Path,
+    rel_key: str,
+    target_album_id: Optional[str],
+) -> bool:
+    # In auto mode, sharded keys map to None; do not clear existing album_id in this case.
+    if target_album_id is None:
+        target_album_id = existing.album_id
+
+    expected_size = int(full_path.stat().st_size)
+    expected_name = full_path.name
+    expected_mime = guess_mime(full_path)
+    existing_album_id_valid = (
+        existing.album_id is None or existing.album_id in ctx.album_ids
+    )
+
+    needs_update = (
+        existing.album_id != target_album_id
+        or existing.size != expected_size
+        or existing.original_name != expected_name
+        or not str(existing.mime_type).startswith("image/")
+        or (existing.mime_type and existing.mime_type != expected_mime)
+        or (existing.album_id and not existing_album_id_valid)
+    )
+
+    if not needs_update:
+        return False
+
+    if not ctx.dry_run:
+        ctx.conn.execute(
+            """
+            UPDATE files
+            SET
+                album_id = ?,
+                original_name = ?,
+                size = ?,
+                mime_type = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                target_album_id,
+                expected_name,
+                expected_size,
+                expected_mime,
+                now_iso(),
+                existing.id,
+            ),
+        )
+
+    return True
+
+
+def load_existing_state(
+    conn: sqlite3.Connection,
+) -> Tuple[Dict[str, str], Set[str], Set[str], Dict[str, ExistingFileRow], Set[str]]:
     album_cache: Dict[str, str] = {}
     slug_cache: Set[str] = set()
     existing_keys: Set[str] = set()
+    existing_files: Dict[str, ExistingFileRow] = {}
+    album_ids: Set[str] = set()
 
     for row in conn.execute("SELECT id, path, slug FROM albums").fetchall():
         album_id, album_path, slug = row
@@ -319,11 +389,23 @@ def load_existing_state(conn: sqlite3.Connection) -> Tuple[Dict[str, str], Set[s
             album_cache[str(album_path)] = str(album_id)
         if slug:
             slug_cache.add(str(slug))
+        if album_id:
+            album_ids.add(str(album_id))
 
-    for row in conn.execute("SELECT key FROM files").fetchall():
-        existing_keys.add(str(row[0]))
+    for row in conn.execute(
+        "SELECT id, key, album_id, original_name, size, mime_type FROM files"
+    ).fetchall():
+        key = str(row[1])
+        existing_keys.add(key)
+        existing_files[key] = ExistingFileRow(
+            id=str(row[0]),
+            album_id=str(row[2]) if row[2] else None,
+            original_name=str(row[3]) if row[3] else "",
+            size=int(row[4]) if row[4] is not None else 0,
+            mime_type=str(row[5]) if row[5] else "",
+        )
 
-    return album_cache, slug_cache, existing_keys
+    return album_cache, slug_cache, existing_keys, existing_files, album_ids
 
 
 def recover(args: argparse.Namespace) -> int:
@@ -350,18 +432,20 @@ def recover(args: argparse.Namespace) -> int:
     conn.row_factory = sqlite3.Row
     try:
         ensure_schema(conn)
-        album_cache, slug_cache, existing_keys = load_existing_state(conn)
+        album_cache, slug_cache, existing_keys, existing_files, album_ids = load_existing_state(conn)
         ctx = RecoveryContext(
             conn=conn,
             dry_run=args.dry_run,
             public_albums=args.public_albums,
             album_cache=album_cache,
             slug_cache=slug_cache,
+            album_ids=album_ids,
         )
 
         scanned = 0
         skipped_non_image = 0
         skipped_existing = 0
+        repaired_existing = 0
         inserted_files = 0
         failed_files = 0
 
@@ -370,6 +454,7 @@ def recover(args: argparse.Namespace) -> int:
         log(f"Database:     {db_path}")
         log(f"Album mode:   {args.album_mode}")
         log(f"Dry run:      {args.dry_run}")
+        log(f"Repair mode:  {args.repair_existing}")
 
         if not args.dry_run:
             conn.execute("BEGIN")
@@ -382,12 +467,21 @@ def recover(args: argparse.Namespace) -> int:
                 skipped_non_image += 1
                 continue
 
-            if rel_key in existing_keys:
-                skipped_existing += 1
-                continue
-
             album_path = decide_album_path(rel_key, args.album_mode)
             album_id = ensure_album_chain(ctx, album_path) if album_path else None
+
+            if rel_key in existing_keys:
+                skipped_existing += 1
+                if args.repair_existing:
+                    existing = existing_files.get(rel_key)
+                    if existing:
+                        try:
+                            if repair_existing_file(ctx, existing, full_path, rel_key, album_id):
+                                repaired_existing += 1
+                        except Exception as exc:  # noqa: BLE001
+                            failed_files += 1
+                            log(f"WARN: failed to repair '{rel_key}': {exc}")
+                continue
 
             try:
                 stat = full_path.stat()
@@ -432,10 +526,11 @@ def recover(args: argparse.Namespace) -> int:
         log("Summary:")
         log(f"  scanned files:        {scanned}")
         log(f"  inserted files:       {inserted_files}")
+        log(f"  repaired existing:    {repaired_existing}")
         log(f"  created albums:       {ctx.created_albums}")
         log(f"  skipped non-images:   {skipped_non_image}")
         log(f"  skipped existing key: {skipped_existing}")
-        log(f"  failed inserts:       {failed_files}")
+        log(f"  failed operations:    {failed_files}")
         return 0
     except Exception as exc:  # noqa: BLE001
         if not args.dry_run:
@@ -482,6 +577,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include hidden files/directories (default excludes hidden/cache/trash/config).",
     )
     parser.add_argument(
+        "--repair-existing",
+        action="store_true",
+        help="Repair existing file rows (album_id/name/size/mime) by current uploads structure.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview recovery result without writing database.",
@@ -497,4 +597,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
